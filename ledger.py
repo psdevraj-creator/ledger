@@ -44,7 +44,7 @@ from matplotlib.figure import Figure
 matplotlib.use("TkAgg", force=True)
 
 APP_NAME = "Ledger"
-APP_VERSION = "1.3.0"
+APP_VERSION = "1.4.0"
 GITHUB_REPO = "psdevraj-creator/ledger"
 RELEASES_API = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
 RELEASES_PAGE = f"https://github.com/{GITHUB_REPO}/releases"
@@ -550,6 +550,61 @@ def months_to_target(start: float, target: float, monthly: float, cap: int = 120
         return None
     return min(int(math.ceil(remaining / monthly)), cap)
 
+@dataclass
+class GoalPlan:
+    id: int
+    name: str
+    target: float
+    months: int
+    saved: float
+    share: int
+    required: float
+    allocated: float
+    months_needed: int | None
+
+    @property
+    def on_time(self) -> bool:
+        return self.months_needed is not None and self.months_needed <= self.months
+
+
+def plan_goals(
+    goals: Sequence[sqlite3.Row], pot: float
+) -> tuple[list[GoalPlan], float]:
+    """Split a monthly pot across goals by share.
+
+    Shares above 100 in total are scaled down proportionally; anything left over
+    below 100 is returned so the page can show what is not yet spoken for.
+    """
+    total_share = sum(int(goal["share_pct"]) for goal in goals)
+    scale = 100.0 / total_share if total_share > 100 else 1.0
+
+    plans: list[GoalPlan] = []
+    for goal in goals:
+        target = float(goal["target"])
+        months = int(goal["months"])
+        saved = float(goal["saved"])
+        share = int(goal["share_pct"])
+        allocated = pot * share * scale / 100.0
+        required = (target - saved) / months if months > 0 else 0.0
+        plans.append(
+            GoalPlan(
+                id=int(goal["id"]),
+                name=str(goal["name"]),
+                target=target,
+                months=months,
+                saved=saved,
+                share=share,
+                required=required,
+                allocated=allocated,
+                months_needed=months_to_target(saved, target, allocated),
+            )
+        )
+
+    allocated_total = sum(plan.allocated for plan in plans)
+    leftover = max(pot - allocated_total, 0.0) if total_share <= 100 else 0.0
+    return plans, leftover
+
+
 
 # ---------------------------------------------------------------------------
 # Seed data
@@ -671,6 +726,16 @@ CREATE TABLE IF NOT EXISTS app_settings (
     value TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS goals (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    name       TEXT NOT NULL,
+    target     REAL NOT NULL,
+    months     INTEGER NOT NULL DEFAULT 12,
+    saved      REAL NOT NULL DEFAULT 0,
+    share_pct  INTEGER NOT NULL DEFAULT 100,
+    created_at TEXT NOT NULL
+);
+
 CREATE INDEX IF NOT EXISTS idx_transactions_date ON transactions(txn_date);
 CREATE INDEX IF NOT EXISTS idx_transactions_category ON transactions(category_id);
 CREATE INDEX IF NOT EXISTS idx_rules_priority ON categorisation_rules(priority);
@@ -712,6 +777,28 @@ class Store:
                 " ON CONFLICT(key) DO UPDATE SET value = '2'"
             )
             self.conn.commit()
+
+        goal_count = self.conn.execute("SELECT COUNT(*) FROM goals").fetchone()[0]
+        if not goal_count:
+            try:
+                target = float(self.get_setting("goal_target", "0") or 0)
+                months_legacy = int(float(self.get_setting("goal_months", "12") or 12))
+                saved = float(self.get_setting("goal_saved", "0") or 0)
+            except ValueError:
+                target = 0.0
+            if target > 0:
+                self.conn.execute(
+                    "INSERT INTO goals(name, target, months, saved, share_pct, created_at)"
+                    " VALUES(?, ?, ?, ?, 100, ?)",
+                    (
+                        "Main goal",
+                        target,
+                        max(months_legacy, 1),
+                        saved,
+                        datetime.now().isoformat(timespec="seconds"),
+                    ),
+                )
+                self.conn.commit()
 
     # -- bootstrap ---------------------------------------------------------
 
@@ -944,6 +1031,50 @@ class Store:
         )
         self.conn.commit()
         return cursor.rowcount
+
+    # -- goals -------------------------------------------------------------
+
+    def goals(self) -> list[sqlite3.Row]:
+        return list(self.conn.execute("SELECT * FROM goals ORDER BY id"))
+
+    def add_goal(
+        self, name: str, target: float, months: int, saved: float, share: int
+    ) -> int:
+        cursor = self.conn.execute(
+            "INSERT INTO goals(name, target, months, saved, share_pct, created_at)"
+            " VALUES(?, ?, ?, ?, ?, ?)",
+            (
+                name.strip() or "Goal",
+                round(float(target), 2),
+                max(int(months), 1),
+                round(float(saved), 2),
+                min(max(int(share), 0), 100),
+                datetime.now().isoformat(timespec="seconds"),
+            ),
+        )
+        self.conn.commit()
+        return int(cursor.lastrowid)
+
+    def update_goal(
+        self, goal_id: int, name: str, target: float, months: int, saved: float, share: int
+    ) -> None:
+        self.conn.execute(
+            "UPDATE goals SET name = ?, target = ?, months = ?, saved = ?, share_pct = ?"
+            " WHERE id = ?",
+            (
+                name.strip() or "Goal",
+                round(float(target), 2),
+                max(int(months), 1),
+                round(float(saved), 2),
+                min(max(int(share), 0), 100),
+                goal_id,
+            ),
+        )
+        self.conn.commit()
+
+    def delete_goal(self, goal_id: int) -> None:
+        self.conn.execute("DELETE FROM goals WHERE id = ?", (goal_id,))
+        self.conn.commit()
 
     def delete_statement(self, source_file: str) -> int:
         cursor = self.conn.execute(
@@ -3916,7 +4047,7 @@ class RulesWindow(ctk.CTkToplevel):
 class PlanPage(Page):
     def build(self) -> None:
         self._projection_key: tuple[Any, ...] | None = None
-        self.grid_columnconfigure(0, weight=0, minsize=352)
+        self.grid_columnconfigure(0, weight=0, minsize=372)
         self.grid_columnconfigure(1, weight=1)
         self.grid_rowconfigure(0, weight=1)
 
@@ -3926,35 +4057,53 @@ class PlanPage(Page):
         )
         form.grid(row=0, column=0, sticky="nsew", padx=(0, 14))
         form.grid_columnconfigure(0, weight=1)
+        form.grid_rowconfigure(2, weight=1)
 
+        head = ctk.CTkFrame(form, fg_color="transparent")
+        head.grid(row=0, column=0, sticky="ew", padx=20, pady=(18, 0))
+        head.grid_columnconfigure(0, weight=1)
         ctk.CTkLabel(
-            form, text="Goal", font=font(12, "bold"), text_color=Palette.TEXT, anchor="w"
-        ).grid(row=0, column=0, sticky="w", padx=20, pady=(18, 0))
-        ctk.CTkLabel(
-            form, text="A target to work towards, and the months you have.",
-            font=font(9), text_color=Palette.FAINT, anchor="w",
-        ).grid(row=1, column=0, sticky="w", padx=20, pady=(3, 14))
-
-        self.target_entry = self._field(
-            form, 2, "Target amount", self._setting("goal_target", "12000")
-        )
-        self.months_entry = self._field(
-            form, 3, "Months to save", self._setting("goal_months", "12")
-        )
-        self.saved_entry = self._field(form, 4, "Already saved", self._setting("goal_saved", "0"))
-
+            head, text="Goals", font=font(12, "bold"), text_color=Palette.TEXT, anchor="w"
+        ).grid(row=0, column=0, sticky="w")
         ctk.CTkButton(
-            form, text="Recalculate", height=36, corner_radius=8,
+            head, text="Add", width=72, height=30, corner_radius=7,
             fg_color=Palette.RAISED, hover_color=Palette.BORDER, border_width=1,
-            border_color=Palette.BORDER, text_color=Palette.TEXT, font=font(10, "bold"),
-            command=lambda: self._calculate(save=True),
-        ).grid(row=5, column=0, columnspan=2, sticky="ew", padx=20, pady=(4, 12))
+            border_color=Palette.BORDER, text_color=Palette.TEXT, font=font(9),
+            command=self._add_goal,
+        ).grid(row=0, column=1, sticky="e")
+        ctk.CTkLabel(
+            form, text="Each goal has its own target, deadline and share of the pot.",
+            font=font(9), text_color=Palette.FAINT, anchor="w", justify="left",
+            wraplength=310,
+        ).grid(row=1, column=0, sticky="w", padx=20, pady=(3, 10))
 
-        cut_box = ctk.CTkFrame(form, fg_color="transparent")
-        cut_box.grid(row=15, column=0, columnspan=2, sticky="ew", padx=20, pady=(0, 12))
-        cut_box.grid_columnconfigure(0, weight=1)
-        cut_head = ctk.CTkFrame(cut_box, fg_color="transparent")
-        cut_head.grid(row=0, column=0, sticky="ew")
+        self.goal_list = ctk.CTkScrollableFrame(
+            form, fg_color="transparent", height=210,
+            scrollbar_button_color=Palette.SCROLL,
+            scrollbar_button_hover_color=Palette.SCROLL_HOVER,
+        )
+        self.goal_list.grid(row=2, column=0, sticky="nsew", padx=14)
+        self.goal_list.grid_columnconfigure(0, weight=1)
+
+        ctk.CTkFrame(form, height=1, fg_color=Palette.BORDER).grid(
+            row=3, column=0, sticky="ew", padx=20, pady=(10, 12)
+        )
+
+        pot = ctk.CTkFrame(form, fg_color="transparent")
+        pot.grid(row=4, column=0, sticky="ew", padx=20)
+        pot.grid_columnconfigure(1, weight=1)
+
+        ctk.CTkLabel(
+            pot, text="MONTHLY POT AFTER THE CUT", font=font(8, "bold"),
+            text_color=Palette.MUTED, anchor="w",
+        ).grid(row=0, column=0, columnspan=2, sticky="w")
+        self.pot_label = ctk.CTkLabel(
+            pot, text="\u2014", font=font(24, "bold"), text_color=Palette.ACCENT, anchor="w"
+        )
+        self.pot_label.grid(row=1, column=0, sticky="w", pady=(2, 8))
+
+        cut_head = ctk.CTkFrame(pot, fg_color="transparent")
+        cut_head.grid(row=2, column=0, columnspan=2, sticky="ew")
         cut_head.grid_columnconfigure(0, weight=1)
         ctk.CTkLabel(
             cut_head, text="Cut spending by", font=font(9),
@@ -3966,107 +4115,60 @@ class PlanPage(Page):
         )
         self.cut_label.grid(row=0, column=1, sticky="e")
         self.cut_slider = ctk.CTkSlider(
-            cut_box,
-            from_=1,
-            to=20,
-            number_of_steps=19,
-            height=16,
-            corner_radius=8,
-            fg_color=Palette.RAISED,
-            progress_color=Palette.ACCENT,
-            button_color=Palette.ACCENT,
-            button_hover_color=Palette.ACCENT_HOVER,
+            pot, from_=1, to=20, number_of_steps=19, height=16, corner_radius=8,
+            fg_color=Palette.RAISED, progress_color=Palette.ACCENT,
+            button_color=Palette.ACCENT, button_hover_color=Palette.ACCENT_HOVER,
             command=self._cut_changed,
         )
-        self.cut_slider.grid(row=1, column=0, sticky="ew", pady=(2, 0))
+        self.cut_slider.grid(row=3, column=0, columnspan=2, sticky="ew", pady=(2, 12))
         self.cut_slider.set(self._saved_cut())
 
-        ctk.CTkFrame(form, height=1, fg_color=Palette.BORDER).grid(
-            row=6, column=0, sticky="ew", padx=20
-        )
-
-        ctk.CTkLabel(
-            form, text="REQUIRED EACH MONTH", font=font(8, "bold"),
-            text_color=Palette.MUTED, anchor="w",
-        ).grid(row=7, column=0, sticky="w", padx=20, pady=(18, 0))
-        self.required_label = ctk.CTkLabel(
-            form, text="\u2014", font=font(26, "bold"), text_color=Palette.ACCENT, anchor="w"
-        )
-        self.required_label.grid(row=8, column=0, sticky="w", padx=20, pady=(2, 16))
-        self.basis_label = ctk.CTkLabel(
-            form, text="", font=font(8), text_color=Palette.FAINT, anchor="e",
-            justify="right", wraplength=140,
-        )
-        self.basis_label.grid(row=8, column=1, sticky="se", padx=(0, 20), pady=(2, 16))
-
-        self.metrics: dict[str, ctk.CTkLabel] = {}
+        self.metrics = {}
         rows = (
             ("net", "Average net per month"),
-            ("shortfall", "Shortfall each month"),
-            ("months_now", "Months at current rate"),
-            ("months_cut", "Months after the cut"),
+            ("allocated", "Allocated to goals"),
+            ("left", "Not yet allocated"),
         )
         for index, (key, caption) in enumerate(rows):
-            row = 9 + index
+            row = 4 + index
             ctk.CTkLabel(
-                form, text=caption, font=font(9), text_color=Palette.MUTED, anchor="w"
-            ).grid(row=row, column=0, sticky="w", padx=(20, 8), pady=(6, 0))
+                pot, text=caption, font=font(9), text_color=Palette.MUTED, anchor="w"
+            ).grid(row=row, column=0, sticky="w", pady=(4, 0))
             value = ctk.CTkLabel(
-                form, text="\u2014", font=font(10, "bold"), text_color=Palette.TEXT, anchor="e"
+                pot, text="\u2014", font=font(10, "bold"), text_color=Palette.TEXT, anchor="e"
             )
-            value.grid(row=row, column=1, sticky="e", padx=(0, 20), pady=(6, 0))
+            value.grid(row=row, column=1, sticky="e", pady=(4, 0))
             self.metrics[key] = value
 
-        ctk.CTkLabel(
-            form,
-            text="The cut applies to your average monthly spending, not to a single month.",
-            font=font(8), text_color=Palette.FAINT, anchor="w",
-            wraplength=290, justify="left",
-        ).grid(row=14, column=0, columnspan=2, sticky="w", padx=20, pady=(14, 6))
+        self.basis_label = ctk.CTkLabel(
+            form, text="", font=font(8), text_color=Palette.FAINT, anchor="w",
+            justify="left", wraplength=310,
+        )
+        self.basis_label.grid(row=5, column=0, sticky="w", padx=20, pady=(10, 16))
 
-        self.chart = ChartPanel(self, "Projection", "balance against target")
+        self.chart = ChartPanel(
+            self, "Time to each target", "bar against deadline",
+            margins=(0.26, 0.97, 0.90, 0.14),
+        )
         self.chart.grid(row=0, column=1, sticky="nsew")
 
-        for entry in (self.target_entry, self.months_entry, self.saved_entry):
-            entry.bind("<KeyRelease>", lambda _event: self._debounced())
-
-        self._debounce_job: str | None = None
         self.after(200, self.refresh)
 
-    def _setting(self, key: str, default: str) -> str:
-        return self.store.get_setting(key, default) or default
+    def _saved_cut(self) -> int:
+        try:
+            value = int(float(self.store.get_setting("plan_cut_pct", "10") or 10))
+        except ValueError:
+            return 10
+        return min(max(value, 1), 20)
 
-    def _field(self, parent: Any, row: int, label: str, value: str) -> ctk.CTkEntry:
-        box = ctk.CTkFrame(parent, fg_color="transparent")
-        box.grid(row=row, column=0, columnspan=2, sticky="ew", padx=20, pady=(0, 12))
-        box.grid_columnconfigure(0, weight=1)
-        ctk.CTkLabel(
-            box, text=label, font=font(9), text_color=Palette.MUTED, anchor="w"
-        ).grid(row=0, column=0, sticky="w", pady=(0, 4))
-        entry = ctk.CTkEntry(
-            box, width=280, height=34, corner_radius=7, border_width=1,
-            fg_color=Palette.BG, border_color=Palette.BORDER, text_color=Palette.TEXT,
-            font=font(11),
-        )
-        entry.insert(0, value)
-        entry.grid(row=1, column=0, sticky="ew")
-        return entry
-
-    def _debounced(self) -> None:
-        if self._debounce_job is not None:
-            self.after_cancel(self._debounce_job)
-        self._debounce_job = self.after(320, lambda: self._calculate(save=True))
-
-    def refresh(self) -> None:
-        self._calculate(save=False)
+    def _cut_changed(self, value: float) -> None:
+        percent = int(round(value))
+        self.cut_label.configure(text=f"{percent}%")
+        self.store.set_setting("plan_cut_pct", str(percent))
+        self.refresh()
 
     def _basis(self) -> tuple[float, float, int]:
-        """Average net and average spending per completed cycle.
-
-        A single cycle is a bad basis for a projection: one large purchase makes
-        the whole plan look impossible. Completed cycles only, so a half-finished
-        month does not drag the average down.
-        """
+        """Average net and average spending per completed cycle."""
         rows = self.app.transactions(date(1900, 1, 1), date(2100, 1, 1))
         buckets: dict[date, list[sqlite3.Row]] = {}
         for row in rows:
@@ -4095,32 +4197,27 @@ class PlanPage(Page):
         count = len(nets)
         return sum(nets) / count, sum(spends) / count, count
 
-    def _saved_cut(self) -> int:
-        try:
-            value = int(float(self.store.get_setting("plan_cut_pct", "10") or 10))
-        except ValueError:
-            return 10
-        return min(max(value, 1), 20)
-
-    def _cut_changed(self, value: float) -> None:
-        percent = int(round(value))
-        self.cut_label.configure(text=f"{percent}%")
-        self.store.set_setting("plan_cut_pct", str(percent))
-        self._calculate(save=False)
-
-    def _calculate(self, save: bool) -> None:
-        target = parse_amount(self.target_entry.get()) or 0.0
-        months = parse_amount(self.months_entry.get()) or 0
-        saved = parse_amount(self.saved_entry.get()) or 0.0
-        months = int(min(max(months, 0), 240))
-
-        required = (target - saved) / months if months > 0 else 0.0
+    def refresh(self) -> None:
         net, spending, cycles = self._basis()
         percent = int(round(self.cut_slider.get()))
-        cut_gain = spending * percent / 100.0
-        projected = net + cut_gain
-        shortfall = required - net
+        pot = net + spending * percent / 100.0
+        goals = self.store.goals()
+        plans, leftover = plan_goals(goals, pot)
 
+        self.pot_label.configure(
+            text=money(pot, decimals=0),
+            text_color=Palette.ACCENT if pot > 0 else Palette.RED,
+        )
+        self.metrics["net"].configure(
+            text=money(net, decimals=0),
+            text_color=Palette.RED if net < 0 else Palette.TEXT,
+        )
+        allocated = sum(plan.allocated for plan in plans)
+        self.metrics["allocated"].configure(text=money(allocated, decimals=0))
+        self.metrics["left"].configure(
+            text=money(leftover, decimals=0) if leftover > 0.5 else "all used",
+            text_color=Palette.FLAG if leftover > 0.5 else Palette.FAINT,
+        )
         self.basis_label.configure(
             text=(
                 f"Average of {cycles} completed cycle{'s' if cycles != 1 else ''}"
@@ -4129,29 +4226,78 @@ class PlanPage(Page):
             )
         )
 
-        self.required_label.configure(
-            text=money(max(required, 0.0), decimals=0),
-            text_color=Palette.ACCENT if required > 0 else Palette.MUTED,
-        )
-        self.metrics["net"].configure(
-            text=money(net, decimals=0),
-            text_color=Palette.RED if net < 0 else Palette.TEXT,
-        )
-        self.metrics["shortfall"].configure(
-            text=money(shortfall, decimals=0) if shortfall > 0 else "on track",
-            text_color=Palette.RED if shortfall > 0 else Palette.ACCENT,
-        )
-        self.metrics["months_now"].configure(text=self._format_months(saved, target, net))
-        self.metrics["months_cut"].configure(
-            text=self._format_months(saved, target, projected)
-        )
+        self._render_goals(plans)
+        self._draw_goals(plans, pot)
 
-        if save:
-            self.store.set_setting("goal_target", f"{target:.2f}")
-            self.store.set_setting("goal_months", str(months))
-            self.store.set_setting("goal_saved", f"{saved:.2f}")
+    def _render_goals(self, plans: Sequence[GoalPlan]) -> None:
+        for child in self.goal_list.winfo_children():
+            child.destroy()
+        if not plans:
+            ctk.CTkLabel(
+                self.goal_list, text="No goals yet. Press Add.",
+                font=font(9), text_color=Palette.FAINT, anchor="w",
+            ).grid(row=0, column=0, sticky="w", padx=6, pady=6)
+            return
+        for index, plan in enumerate(plans):
+            row = ctk.CTkFrame(self.goal_list, fg_color="transparent")
+            row.grid(row=index, column=0, sticky="ew", pady=2, padx=2)
+            row.grid_columnconfigure(0, weight=1)
+            ctk.CTkLabel(
+                row, text=plan.name[:26], font=font(10, "bold"),
+                text_color=Palette.TEXT, anchor="w",
+            ).grid(row=0, column=0, sticky="w")
+            detail = (
+                f"{money(plan.target, 0)} by {plan.months} mo  \u00b7  {plan.share}%"
+            )
+            ctk.CTkLabel(
+                row, text=detail, font=font(8), text_color=Palette.FAINT, anchor="w",
+            ).grid(row=1, column=0, sticky="w")
+            status = (
+                f"{money(plan.allocated, 0)}/mo"
+                if plan.months_needed is not None
+                else "not at this rate"
+            )
+            ctk.CTkLabel(
+                row, text=status, font=font(8),
+                text_color=Palette.ACCENT if plan.on_time else Palette.RED,
+                anchor="e",
+            ).grid(row=0, column=1, rowspan=2, sticky="e", padx=(8, 6))
+            ctk.CTkButton(
+                row, text="Edit", width=48, height=26, corner_radius=6,
+                fg_color="transparent", hover_color=Palette.RAISED, border_width=1,
+                border_color=Palette.BORDER, text_color=Palette.MUTED, font=font(8),
+                command=lambda goal_id=int(plan.id): self._edit_goal(goal_id),
+            ).grid(row=0, column=2, rowspan=2, sticky="e")
 
-        self._draw_projection(target, saved, months, net, projected, percent)
+    def _add_goal(self) -> None:
+        dialog = GoalDialog(self.app, None)
+        self.app.wait_window(dialog)
+        if dialog.result is None:
+            return
+        name, target, months, saved, share = dialog.result
+        self.store.add_goal(name, target, months, saved, share)
+        self.refresh()
+        self.app.notify(f"Goal {name} added.", Palette.ACCENT)
+
+    def _edit_goal(self, goal_id: int) -> None:
+        current = None
+        for row in self.store.goals():
+            if int(row["id"]) == goal_id:
+                current = row
+                break
+        if current is None:
+            return
+        dialog = GoalDialog(self.app, current)
+        self.app.wait_window(dialog)
+        if dialog.result is None:
+            if dialog.deleted:
+                self.store.delete_goal(goal_id)
+                self.refresh()
+                self.app.notify("Goal removed.")
+            return
+        name, target, months, saved, share = dialog.result
+        self.store.update_goal(goal_id, name, target, months, saved, share)
+        self.refresh()
 
     def _format_months(self, saved: float, target: float, rate: float) -> str:
         if target <= 0:
@@ -4165,64 +4311,174 @@ class PlanPage(Page):
             return "over ten years"
         return f"{reached} month{'s' if reached != 1 else ''}"
 
-    def _draw_projection(
-        self,
-        target: float,
-        saved: float,
-        months: int,
-        net: float,
-        projected: float,
-        percent: int,
-    ) -> None:
-        key = (
-            round(target, 2),
-            round(saved, 2),
-            months,
-            round(net, 2),
-            round(projected, 2),
-            percent,
-        )
+    def _draw_goals(self, plans: Sequence[GoalPlan], pot: float) -> None:
+        if not plans:
+            self.chart.empty("Add a goal to see the timeline")
+            return
+        key = tuple(
+            (plan.name, round(plan.target, 2), plan.months, round(plan.allocated, 2),
+             plan.months_needed)
+            for plan in plans
+        ) + (round(pot, 2),)
         if key == self._projection_key:
             return
         self._projection_key = key
-        if target <= 0:
-            self.chart.empty("Set a target to see the projection")
-            return
-        needed = months_to_target(saved, target, max(projected, 0.01)) or months or 12
-        horizon = int(min(max(months, needed, 6), 60))
 
         plot = self.chart.axes()
-        positions = list(range(horizon + 1))
-        tracks = (
-            ("As things are", net, Palette.MUTED),
-            (f"Spending cut by {percent}%", projected, Palette.ACCENT),
+        plot.grid(False)
+        plot.grid(axis="x", color=Palette.BORDER, linewidth=0.7, alpha=0.7)
+        positions = list(range(len(plans)))
+        longest = max(
+            [plan.months for plan in plans]
+            + [plan.months_needed or 0 for plan in plans]
+            + [6]
         )
-        for label, rate, colour in tracks:
-            values = [saved + max(rate, 0.0) * index for index in positions]
-            plot.plot(positions, values, color=colour, linewidth=1.8, label=label, zorder=2)
-
-        plot.axhline(
-            target, color=Palette.FLAG, linewidth=1.0, linestyle=(0, (4, 4)), zorder=1
+        for index, plan in enumerate(plans):
+            if plan.months_needed is None:
+                plot.plot(
+                    [plan.months], [index], marker="|", markersize=14,
+                    color=Palette.RED, zorder=3,
+                )
+                plot.text(
+                    plan.months + 0.6, index, "not at this rate",
+                    va="center", fontsize=8.5, color=Palette.RED,
+                )
+            else:
+                colour = Palette.ACCENT if plan.on_time else Palette.RED
+                plot.barh(index, plan.months_needed, height=0.48, color=colour, zorder=2)
+                plot.plot(
+                    [plan.months, plan.months], [index - 0.32, index + 0.32],
+                    color=Palette.TEXT, linewidth=1.4, zorder=4,
+                )
+                plot.text(
+                    plan.months_needed + 0.6, index,
+                    f"{plan.months_needed} of {plan.months} mo",
+                    va="center", fontsize=8.5, color=Palette.MUTED,
+                )
+        plot.set_yticks(positions)
+        plot.set_yticklabels(
+            [plan.name[:20] for plan in plans], fontsize=9, color=Palette.MUTED
         )
-        plot.text(
-            0.5, target, "target", color=Palette.FLAG, fontsize=8.5,
-            va="bottom", ha="left",
-        )
-        plot.set_xlabel("months", color=Palette.MUTED, fontsize=9, labelpad=2)
-        plot.yaxis.set_major_formatter(lambda value, _pos: compact_money(value))
-        plot.margins(y=0.18, x=0.02)
-        plot.set_xlim(0, horizon)
-        legend = plot.legend(
-            frameon=False, fontsize=8.5, loc="lower right", labelcolor=Palette.MUTED,
-        )
-        for text in legend.get_texts():
-            text.set_color(Palette.MUTED)
+        plot.invert_yaxis()
+        plot.set_xlim(0, longest + 6)
+        plot.set_ylim(len(plans) - 0.5, -0.5)
+        plot.tick_params(axis="y", length=0, pad=2)
+        plot.set_xlabel("months to reach the target", color=Palette.MUTED,
+                        fontsize=9, labelpad=2)
         self.chart.redraw()
 
 
-# ---------------------------------------------------------------------------
-# Insights
-# ---------------------------------------------------------------------------
+class GoalDialog(ctk.CTkToplevel):
+    """Add or edit one goal: name, target, deadline, already saved, share."""
+
+    def __init__(self, master: Any, goal: sqlite3.Row | None) -> None:
+        super().__init__(master)
+        self.result: tuple[str, float, int, float, int] | None = None
+        self.deleted = False
+        self.goal = goal
+        self.title("Edit goal" if goal is not None else "Add goal")
+        self.geometry("520x520")
+        self.resizable(False, False)
+        self.configure(fg_color=Palette.BG)
+        self.transient(master)
+        self._build()
+        self.after(100, self._grab)
+
+    def _grab(self) -> None:
+        try:
+            self.grab_set()
+            self.lift()
+            self.focus_force()
+        except tk.TclError:
+            pass
+
+    def _field(self, parent: Any, row: int, label: str, value: str) -> ctk.CTkEntry:
+        ctk.CTkLabel(
+            parent, text=label, font=font(9), text_color=Palette.MUTED, anchor="w"
+        ).grid(row=row * 2, column=0, columnspan=2, sticky="w", pady=(8, 2))
+        entry = ctk.CTkEntry(
+            parent, height=34, corner_radius=8, border_width=1,
+            fg_color=Palette.SURFACE, border_color=Palette.BORDER,
+            text_color=Palette.TEXT, font=font(10),
+        )
+        entry.insert(0, value)
+        entry.grid(row=row * 2 + 1, column=0, columnspan=2, sticky="ew")
+        return entry
+
+    def _build(self) -> None:
+        self.grid_columnconfigure(0, weight=1)
+        body = ctk.CTkFrame(self, fg_color="transparent")
+        body.grid(row=0, column=0, sticky="ew", padx=26, pady=(22, 0))
+        body.grid_columnconfigure(0, weight=1)
+
+        goal = self.goal
+        self.name_entry = self._field(
+            body, 0, "Name", str(goal["name"]) if goal is not None else ""
+        )
+        self.target_entry = self._field(
+            body, 1, "Target amount",
+            f"{float(goal['target']):.0f}" if goal is not None else "12000",
+        )
+        self.months_entry = self._field(
+            body, 2, "Months to reach it",
+            str(int(goal["months"])) if goal is not None else "12",
+        )
+        self.saved_entry = self._field(
+            body, 3, "Already saved",
+            f"{float(goal['saved']):.0f}" if goal is not None else "0",
+        )
+        self.share_entry = self._field(
+            body, 4, "Share of the monthly pot (%)",
+            str(int(goal["share_pct"])) if goal is not None else "100",
+        )
+        ctk.CTkLabel(
+            body,
+            text="Shares across goals should add up to 100%. Anything over that is scaled "
+                 "down proportionally.",
+            font=font(8), text_color=Palette.FAINT, anchor="w", justify="left",
+            wraplength=440,
+        ).grid(row=10, column=0, columnspan=2, sticky="w", pady=(8, 0))
+
+        buttons = ctk.CTkFrame(self, fg_color="transparent")
+        buttons.grid(row=1, column=0, sticky="ew", padx=26, pady=(18, 20))
+        buttons.grid_columnconfigure(0, weight=1)
+        if goal is not None:
+            ctk.CTkButton(
+                buttons, text="Remove", width=96, height=36, corner_radius=8,
+                fg_color="transparent", hover_color=Palette.RAISED, border_width=1,
+                border_color=Palette.BORDER, text_color=Palette.RED, font=font(10),
+                command=self._remove,
+            ).grid(row=0, column=0, sticky="w")
+        ctk.CTkButton(
+            buttons, text="Cancel", width=96, height=36, corner_radius=8,
+            fg_color="transparent", hover_color=Palette.RAISED, border_width=1,
+            border_color=Palette.BORDER, text_color=Palette.MUTED, font=font(10),
+            command=self.destroy,
+        ).grid(row=0, column=1, padx=(0, 10))
+        ctk.CTkButton(
+            buttons, text="Save", width=110, height=36, corner_radius=8,
+            fg_color=Palette.ACCENT, hover_color=Palette.ACCENT_HOVER,
+            text_color="#FFFFFF", font=font(10, "bold"), command=self._save,
+        ).grid(row=0, column=2)
+
+        self.bind("<Escape>", lambda _event: self.destroy())
+
+    def _remove(self) -> None:
+        self.deleted = True
+        self.destroy()
+
+    def _save(self) -> None:
+        name = self.name_entry.get().strip() or "Goal"
+        target = parse_amount(self.target_entry.get()) or 0.0
+        months = int(min(max(parse_amount(self.months_entry.get()) or 1, 1), 600))
+        saved = parse_amount(self.saved_entry.get()) or 0.0
+        share = int(min(max(parse_amount(self.share_entry.get()) or 0, 0), 100))
+        if target <= 0:
+            self.name_entry.focus_set()
+            return
+        self.result = (name, target, months, saved, share)
+        self.destroy()
+
 
 SYSTEM_INSTRUCTION = (
     "You are a financial analyst reviewing one person's monthly spending. "

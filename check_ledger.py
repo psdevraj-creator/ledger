@@ -978,6 +978,44 @@ equal("one account after merge", len(merged), 1)
 equal("merge keeps every row", int(merged[0]["rows"]), 5)
 equal("renaming to itself does nothing", acct_store.rename_account("Current", "Current"), 0)
 
+print("goals")
+goal_store = L.Store(tmp / "goals.db")
+goal_store.add_goal("House", 30000, 36, 0, 50)
+goal_store.add_goal("Car", 8000, 24, 2000, 30)
+equal("two goals stored", len(goal_store.goals()), 2)
+
+plans, leftover = L.plan_goals(goal_store.goals(), 1000.0)
+equal("share split", round(plans[0].allocated, 2), 500.0)
+equal("second share split", round(plans[1].allocated, 2), 300.0)
+equal("leftover reported", round(leftover, 2), 200.0)
+equal("required per month", round(plans[0].required, 2), round(30000 / 36, 2))
+check("house is late at this rate", not plans[0].on_time, plans[0].months_needed)
+check("car is on time", plans[1].on_time, plans[1].months_needed)
+
+# shares over 100 are scaled down, never overspending the pot
+car_id = int(goal_store.goals()[1]["id"])
+goal_store.update_goal(car_id, "Car", 8000, 24, 2000, 100)
+plans_over, leftover_over = L.plan_goals(goal_store.goals(), 1000.0)
+equal("over-allocation scaled to the pot",
+      round(sum(plan.allocated for plan in plans_over), 2), 1000.0)
+equal("nothing left when over-allocated", round(leftover_over, 2), 0.0)
+
+# a single old-style goal is carried over on first run
+legacy_goal = tmp / "legacy_goal.db"
+seed_store = L.Store(legacy_goal)
+seed_store.set_setting("goal_target", "7500")
+seed_store.set_setting("goal_months", "15")
+seed_store.set_setting("goal_saved", "500")
+seed_store.close()
+reopened = L.Store(legacy_goal)
+migrated_goals = reopened.goals()
+equal("legacy goal migrated", len(migrated_goals), 1)
+equal("legacy target kept", float(migrated_goals[0]["target"]), 7500.0)
+equal("legacy months kept", int(migrated_goals[0]["months"]), 15)
+reopened.delete_goal(int(migrated_goals[0]["id"]))
+equal("goal removed", len(reopened.goals()), 0)
+reopened.close()
+
 # ---------------------------------------------------------------------------
 print(f"\n{PASS} passed, {FAIL} failed")
 raise SystemExit(1 if FAIL else 0)

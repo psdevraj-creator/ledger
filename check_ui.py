@@ -88,19 +88,18 @@ def main() -> int:
     plan = app.pages["plan"]
     app.show_page("plan")
     app.update()
-    check("required figure shown", L.CURRENCY in plan.required_label.cget("text"),
-          plan.required_label.cget("text"))
-    lines = plan.chart.figure.axes[0].lines
-    check("projection track, cut track and target line", len(lines) >= 3, len(lines))
-    legend_labels = [
-        text.get_text() for text in plan.chart.figure.axes[0].get_legend().get_texts()
-    ]
-    check("legend names the cut", any("cut by" in label for label in legend_labels),
-          legend_labels)
-    check("cut slider defaults into range", 1 <= int(plan.cut_slider.get()) <= 20,
+    check("pot figure shown", L.CURRENCY in plan.pot_label.cget("text"),
+          plan.pot_label.cget("text"))
+    check("goals listed", len(plan.goal_list.winfo_children()) >= 1,
+          len(plan.goal_list.winfo_children()))
+    check("cut slider in range", 1 <= int(round(plan.cut_slider.get())) <= 20,
           plan.cut_slider.get())
-    check("months readout", plan.metrics["months_now"].cget("text") != "\u2014",
-          plan.metrics["months_now"].cget("text"))
+    check("allocated readout", L.CURRENCY in plan.metrics["allocated"].cget("text"),
+          plan.metrics["allocated"].cget("text"))
+    bars = [
+        patch for patch in plan.chart.figure.axes[0].patches
+    ]
+    check("timeline draws a bar per goal", len(bars) >= 1, len(bars))
 
     insights = app.pages["insights"]
     app.show_page("insights")
