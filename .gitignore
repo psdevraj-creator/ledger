@@ -3,6 +3,7 @@ dist/
 build/
 *.spec
 *.msi
+*.wixpdb
 payload.wxs
 
 # Local data
