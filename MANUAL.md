@@ -46,7 +46,13 @@ Three things it is built to do well:
 
 ## 2. Getting started
 
-**If you were given `Ledger.exe`:** double-click it. That is the whole install.
+**If you downloaded the installer (`Ledger-1.0.0-x64.msi`):** double-click it, then
+**Install**. It installs for your Windows account only — no administrator password — and
+adds a Desktop shortcut and a Start Menu entry. The app and your data live in
+`%LOCALAPPDATA%\Programs\Ledger`. Uninstalling leaves your data in place.
+
+**If you were given the `Ledger` folder:** double-click `Ledger.exe` inside it. Keep the
+`_internal` folder beside it.
 
 **If you are running the Python file:** `python ledger.py`
 
