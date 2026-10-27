@@ -1,0 +1,25 @@
+# Build output
+dist/
+build/
+*.spec
+*.msi
+
+# Local data
+*.db
+*.db-wal
+*.db-shm
+.backups/
+_backups/
+.nano-profile/
+smoke_report.txt
+ledger_error.log
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.ruff_cache/
+
+# Editor / harness artefacts
+.opencode-backups/

@@ -1,0 +1,70 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Installer for Ledger.
+
+  Installs per user, not per machine: the folder is the user's own
+  %LOCALAPPDATA%\Programs\Ledger, so the app can create budget_data.db and
+  .backups beside the executable without needing administrator rights.
+-->
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
+
+  <Package
+      Name="Ledger"
+      Manufacturer="Dev Srinivasan"
+      Version="1.0.0"
+      UpgradeCode="e58414a9-0502-49e1-8284-5b467cdb5ade"
+      Scope="perUser"
+      Compressed="yes"
+      Language="1033">
+
+    <SummaryInformation
+        Description="Ledger - personal finance for Windows"
+        Manufacturer="Dev Srinivasan" />
+
+    <MajorUpgrade DowngradeErrorMessage="A newer version of Ledger is already installed." />
+    <MediaTemplate EmbedCab="yes" CompressionLevel="medium" />
+
+    <StandardDirectory Id="LocalAppDataFolder">
+      <Directory Id="ProgramsFolder" Name="Programs">
+        <Directory Id="INSTALLFOLDER" Name="Ledger" />
+      </Directory>
+    </StandardDirectory>
+
+    <StandardDirectory Id="ProgramMenuFolder">
+      <Directory Id="AppMenuFolder" Name="Ledger" />
+    </StandardDirectory>
+
+    <Feature Id="Main" Title="Ledger" Level="1">
+      <ComponentGroupRef Id="Payload" />
+      <ComponentRef Id="ApplicationShortcuts" />
+    </Feature>
+
+    <ComponentGroup Id="Payload" Directory="INSTALLFOLDER">
+      <Files Include="dist\Ledger\_internal\**" />
+    </ComponentGroup>
+
+  </Package>
+
+  <Fragment>
+    <Component Id="ApplicationShortcuts" Directory="INSTALLFOLDER"
+               Guid="1431e293-aaaa-4152-a1a5-a1d9fc5ad368">
+
+      <File Id="LedgerExe" Source="dist\Ledger\Ledger.exe" KeyPath="yes">
+        <Shortcut Id="StartMenuShortcut"
+                  Directory="AppMenuFolder"
+                  Name="Ledger"
+                  WorkingDirectory="INSTALLFOLDER"
+                  Advertise="no" />
+        <Shortcut Id="DesktopShortcut"
+                  Directory="DesktopFolder"
+                  Name="Ledger"
+                  WorkingDirectory="INSTALLFOLDER"
+                  Advertise="no" />
+      </File>
+
+      <RemoveFolder Id="RemoveAppMenuFolder" Directory="AppMenuFolder" On="uninstall" />
+
+    </Component>
+  </Fragment>
+
+</Wix>
