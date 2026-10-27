@@ -23,6 +23,8 @@ Everything stays on your computer. One SQLite file, no account, no sign-in, no c
   from the same window.
 - **Ignore anything that isn't yours to count.** Ignored transactions leave every figure and
   stay in the list.
+- **Work per account.** Rename an account, and narrow every screen to one account from the
+  header selector once you have more than one.
 - **Undo an import.** Settings lists every imported statement; removing one deletes exactly
   the rows it brought in.
 - **Goals and forecasts.** Required monthly rate, plus what happens if you cut flagged

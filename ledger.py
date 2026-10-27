@@ -44,7 +44,7 @@ from matplotlib.figure import Figure
 matplotlib.use("TkAgg", force=True)
 
 APP_NAME = "Ledger"
-APP_VERSION = "1.2.0"
+APP_VERSION = "1.3.0"
 GITHUB_REPO = "psdevraj-creator/ledger"
 RELEASES_API = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
 RELEASES_PAGE = f"https://github.com/{GITHUB_REPO}/releases"
@@ -924,6 +924,26 @@ class Store:
                 " GROUP BY source_file ORDER BY last_day DESC"
             )
         )
+
+    def accounts(self) -> list[sqlite3.Row]:
+        return list(
+            self.conn.execute(
+                "SELECT account, COUNT(*) AS rows, MIN(txn_date) AS first_day,"
+                " MAX(txn_date) AS last_day FROM transactions"
+                " GROUP BY account ORDER BY account COLLATE NOCASE"
+            )
+        )
+
+    def rename_account(self, old: str, new: str) -> int:
+        """Rename across every transaction. A name already in use merges the two."""
+        clean = new.strip()
+        if not clean or clean == old:
+            return 0
+        cursor = self.conn.execute(
+            "UPDATE transactions SET account = ? WHERE account = ?", (clean, old)
+        )
+        self.conn.commit()
+        return cursor.rowcount
 
     def delete_statement(self, source_file: str) -> int:
         cursor = self.conn.execute(
@@ -2097,6 +2117,7 @@ class App(ctk.CTk):
         super().__init__()
         self.store = store
         self.cycle_anchor = store.anchor
+        self.account_scope = store.get_setting("account_scope", "") or None
         today = date.today()
         self.cursor_year = today.year
         self.cursor_month = today.month
@@ -2258,11 +2279,22 @@ class App(ctk.CTk):
         controls = ctk.CTkFrame(header, fg_color="transparent")
         controls.grid(row=0, column=1, sticky="e")
 
+        self.account_menu = ctk.CTkOptionMenu(
+            controls, values=["All accounts"], width=190, height=38, corner_radius=8,
+            fg_color=Palette.SURFACE, button_color=Palette.SURFACE,
+            button_hover_color=Palette.RAISED, dropdown_fg_color=Palette.SURFACE,
+            dropdown_hover_color=Palette.RAISED, dropdown_text_color=Palette.TEXT,
+            text_color=Palette.TEXT, font=font(10), dropdown_font=font(10),
+            command=self._scope_changed,
+        )
+        self.account_menu.set("All accounts")
+        self.account_menu.grid(row=0, column=0, padx=(0, 12))
+
         stepper = ctk.CTkFrame(
             controls, fg_color=Palette.SURFACE, corner_radius=8,
             border_width=1, border_color=Palette.BORDER,
         )
-        stepper.grid(row=0, column=0, padx=(0, 12))
+        stepper.grid(row=0, column=1, padx=(0, 12))
         ctk.CTkButton(
             stepper, text="\u2039", width=30, height=30, corner_radius=6,
             fg_color="transparent", hover_color=Palette.RAISED,
@@ -2285,7 +2317,7 @@ class App(ctk.CTk):
             fg_color=Palette.ACCENT, hover_color=Palette.ACCENT_HOVER,
             text_color="#FFFFFF", font=font(11, "bold"),
             command=self.import_statement,
-        ).grid(row=0, column=1)
+        ).grid(row=0, column=2)
 
         self.status_label = ctk.CTkLabel(
             self, text="", font=font(9), text_color=Palette.FAINT, anchor="w"
@@ -2296,6 +2328,13 @@ class App(ctk.CTk):
 
     def cycle(self) -> tuple[date, date]:
         return cycle_bounds(self.cursor_year, self.cursor_month, self.cycle_anchor)
+
+    def transactions(self, start: date, end: date) -> list[sqlite3.Row]:
+        """Rows in the window, narrowed to the selected account when one is chosen."""
+        rows = self.store.transactions_between(start, end)
+        if self.account_scope:
+            return [row for row in rows if str(row["account"]) == self.account_scope]
+        return rows
 
     def shift_cycle(self, delta: int) -> None:
         self.cursor_year, self.cursor_month = shift_month(
@@ -2371,6 +2410,22 @@ class App(ctk.CTk):
         current = start <= today <= end
         marker = "current cycle" if current else f"opened {format_day(start)}"
         self.range_label.configure(text=f"{format_range(start, end)}  \u00b7  {marker}")
+
+        names = [str(row["account"]) for row in self.store.accounts()]
+        if self.account_scope and self.account_scope not in names:
+            self.account_scope = None
+            self.store.set_setting("account_scope", "")
+        self.account_menu.configure(values=["All accounts", *names])
+        self.account_menu.set(self.account_scope or "All accounts")
+        if len(names) > 1:
+            self.account_menu.grid()
+        else:
+            self.account_menu.grid_remove()
+
+    def _scope_changed(self, value: str) -> None:
+        self.account_scope = None if value == "All accounts" else value
+        self.store.set_setting("account_scope", self.account_scope or "")
+        self.refresh_all()
 
     def _sync_backup_label(self) -> None:
         moment = self.store.last_backup_time()
@@ -2582,7 +2637,7 @@ class DashboardPage(Page):
 
     def refresh(self) -> None:
         start, end = self.app.cycle()
-        rows = self.store.transactions_between(start, end)
+        rows = self.app.transactions(start, end)
         summary = summarise(rows, start, end)
 
         self.cards["income"].set(money(summary.income, 0), f"{summary.deposits} deposits")
@@ -2606,7 +2661,7 @@ class DashboardPage(Page):
         cycles = previous_cycles(
             self.app.cursor_year, self.app.cursor_month, self.app.cycle_anchor, 6
         )
-        rows = self.store.transactions_between(cycles[0][0], cycles[-1][1])
+        rows = self.app.transactions(cycles[0][0], cycles[-1][1])
         labels: list[str] = []
         incomes: list[float] = []
         spends: list[float] = []
@@ -2846,7 +2901,7 @@ class TransactionsPage(Page):
         else:
             start, end = self.app.cycle()
             self.range_hint = format_range(start, end)
-        self._rows = self.store.transactions_between(start, end)
+        self._rows = self.app.transactions(start, end)
         self._by_id = {int(row["id"]): row for row in self._rows}
         self._render()
 
@@ -3483,6 +3538,68 @@ class ConfirmDialog(ctk.CTkToplevel):
         self.destroy()
 
 
+class TextPromptDialog(ctk.CTkToplevel):
+    """Single-line text prompt."""
+
+    def __init__(
+        self, master: Any, title: str, label: str, initial: str = ""
+    ) -> None:
+        super().__init__(master)
+        self.result: str | None = None
+        self.title(title)
+        self.geometry("520x250")
+        self.resizable(False, False)
+        self.configure(fg_color=Palette.BG)
+        self.transient(master)
+        self.grid_columnconfigure(0, weight=1)
+        ctk.CTkLabel(
+            self, text=title, font=font(15, "bold"), text_color=Palette.TEXT, anchor="w",
+        ).grid(row=0, column=0, sticky="w", padx=26, pady=(24, 4))
+        ctk.CTkLabel(
+            self, text=label, font=font(9), text_color=Palette.MUTED, anchor="w",
+            wraplength=450, justify="left",
+        ).grid(row=1, column=0, sticky="w", padx=26)
+        self.entry = ctk.CTkEntry(
+            self, height=36, corner_radius=8, border_width=1,
+            fg_color=Palette.SURFACE, border_color=Palette.BORDER,
+            text_color=Palette.TEXT, font=font(11),
+        )
+        self.entry.grid(row=2, column=0, sticky="ew", padx=26, pady=(12, 0))
+        self.entry.insert(0, initial)
+        self.entry.select_range(0, "end")
+
+        buttons = ctk.CTkFrame(self, fg_color="transparent")
+        buttons.grid(row=3, column=0, sticky="e", padx=26, pady=(16, 20))
+        ctk.CTkButton(
+            buttons, text="Cancel", width=96, height=34, corner_radius=8,
+            fg_color="transparent", hover_color=Palette.RAISED, border_width=1,
+            border_color=Palette.BORDER, text_color=Palette.MUTED, font=font(10),
+            command=self.destroy,
+        ).grid(row=0, column=0, padx=(0, 10))
+        ctk.CTkButton(
+            buttons, text="Save", width=110, height=34, corner_radius=8,
+            fg_color=Palette.ACCENT, hover_color=Palette.ACCENT_HOVER,
+            text_color="#FFFFFF", font=font(10, "bold"), command=self._save,
+        ).grid(row=0, column=1)
+
+        self.entry.bind("<Return>", lambda _event: self._save())
+        self.bind("<Escape>", lambda _event: self.destroy())
+        self.after(100, self._grab)
+
+    def _grab(self) -> None:
+        try:
+            self.grab_set()
+            self.lift()
+            self.focus_force()
+            self.entry.focus_set()
+        except tk.TclError:
+            pass
+
+    def _save(self) -> None:
+        self.result = self.entry.get().strip()
+        self.destroy()
+
+
 class RuleDialog(ctk.CTkToplevel):
     def __init__(self, master: Any, description: str, current: str, target: str) -> None:
         super().__init__(master)
@@ -3915,7 +4032,7 @@ class PlanPage(Page):
         months = int(min(max(months, 0), 240))
 
         start, end = self.app.cycle()
-        rows = self.store.transactions_between(start, end)
+        rows = self.app.transactions(start, end)
         summary = summarise(rows, start, end)
         required = (target - saved) / months if months > 0 else 0.0
         net = summary.net
@@ -4048,7 +4165,7 @@ def build_context(
     cycles = previous_cycles(
         app.cursor_year, app.cursor_month, app.cycle_anchor, 6
     )
-    trend_rows = app.store.transactions_between(cycles[0][0], cycles[-1][1])
+    trend_rows = app.transactions(cycles[0][0], cycles[-1][1])
     trend: list[dict[str, Any]] = []
     for cycle_start_date, cycle_end_date in cycles:
         subset = [
@@ -4618,11 +4735,17 @@ class Finding:
 
 
 def period_records(
-    store: Store, names: dict[int, str], start: date, end: date
+    store: Store,
+    names: dict[int, str],
+    start: date,
+    end: date,
+    account: str | None = None,
 ) -> list[dict[str, Any]]:
     records: list[dict[str, Any]] = []
     for row in store.transactions_between(start, end):
         if int(row["is_transfer"]) or int(row["is_ignored"]):
+            continue
+        if account and str(row["account"]) != account:
             continue
         records.append(
             {
@@ -4926,12 +5049,13 @@ class InsightsPage(Page):
             self.app.cursor_year, self.app.cursor_month, self.app.cycle_anchor, 4
         )
         return [
-            period_records(self.store, names, start, end) for start, end in cycles
+            period_records(self.store, names, start, end, self.app.account_scope)
+            for start, end in cycles
         ]
 
     def _context_payload(self, question: str = "") -> dict[str, Any]:
         start, end = self.app.cycle()
-        rows = self.store.transactions_between(start, end)
+        rows = self.app.transactions(start, end)
         summary = summarise(rows, start, end)
         payload = build_context(self.app, rows, summary, start, end)
         payload["question"] = question or (
@@ -4944,7 +5068,7 @@ class InsightsPage(Page):
 
     def refresh(self) -> None:
         start, end = self.app.cycle()
-        rows = self.store.transactions_between(start, end)
+        rows = self.app.transactions(start, end)
         summary = summarise(rows, start, end)
         self.findings = run_skills(self._periods(), summary, self._goal())
         self._render_findings()
@@ -5431,8 +5555,22 @@ class SettingsPage(Page):
         )
         self.statement_list.grid_columnconfigure(0, weight=1)
 
+        # Accounts ------------------------------------------------------
+        card = self._card(
+            right,
+            "Accounts",
+            "What each account is called. Rename one to fix an import default or to tidy "
+            "the name shown in the header.",
+        )
+        self.account_list = ctk.CTkFrame(card, fg_color="transparent")
+        self.account_list.grid(
+            row=2, column=0, columnspan=3, sticky="ew", padx=20, pady=(12, 16)
+        )
+        self.account_list.grid_columnconfigure(0, weight=1)
+
         self._load_categories()
         self._load_statements()
+        self._load_accounts()
         self.refresh()
 
     def _card(self, parent: Any, title: str, subtitle: str) -> ctk.CTkFrame:
@@ -5454,6 +5592,8 @@ class SettingsPage(Page):
     def refresh(self) -> None:
         if hasattr(self, "statement_list"):
             self._load_statements()
+        if hasattr(self, "account_list"):
+            self._load_accounts()
         start, end = self.cycle_note()
         anchor = self.app.cycle_anchor
         note = f"Statements run {format_range(start, end)}."
@@ -5623,6 +5763,59 @@ class SettingsPage(Page):
                 border_color=Palette.BORDER, text_color=Palette.MUTED, font=font(9),
                 command=lambda value=name: self._remove_statement(value),
             ).grid(row=0, column=1, rowspan=2, sticky="e", padx=(10, 0))
+
+    def _load_accounts(self) -> None:
+        for child in self.account_list.winfo_children():
+            child.destroy()
+        rows = self.store.accounts()
+        if not rows:
+            ctk.CTkLabel(
+                self.account_list, text="Nothing imported yet.",
+                font=font(9), text_color=Palette.FAINT, anchor="w",
+            ).grid(row=0, column=0, sticky="w")
+            return
+        for index, row in enumerate(rows):
+            name = str(row["account"])
+            box = ctk.CTkFrame(self.account_list, fg_color="transparent")
+            box.grid(row=index, column=0, sticky="ew", pady=2)
+            box.grid_columnconfigure(0, weight=1)
+            ctk.CTkLabel(
+                box, text=name or "unnamed", font=font(9),
+                text_color=Palette.TEXT, anchor="w",
+            ).grid(row=0, column=0, sticky="w")
+            ctk.CTkLabel(
+                box, text=f"{row['rows']} transactions",
+                font=font(8), text_color=Palette.FAINT, anchor="w",
+            ).grid(row=1, column=0, sticky="w")
+            ctk.CTkButton(
+                box, text="Rename", width=78, height=28, corner_radius=6,
+                fg_color="transparent", hover_color=Palette.RAISED, border_width=1,
+                border_color=Palette.BORDER, text_color=Palette.MUTED, font=font(9),
+                command=lambda value=name: self._rename_account(value),
+            ).grid(row=0, column=1, rowspan=2, sticky="e", padx=(10, 0))
+
+    def _rename_account(self, old_name: str) -> None:
+        dialog = TextPromptDialog(
+            self.app,
+            "Rename account",
+            "Every transaction on this account takes the new name. Using a name that "
+            "already exists merges the two accounts.",
+            initial=old_name,
+        )
+        self.app.wait_window(dialog)
+        new_name = dialog.result
+        if not new_name or new_name == old_name:
+            return
+        changed = self.store.rename_account(old_name, new_name)
+        if self.app.account_scope == old_name:
+            self.app.account_scope = new_name
+            self.store.set_setting("account_scope", new_name)
+        self._load_accounts()
+        self._load_statements()
+        self.app.refresh_all()
+        self.app.notify(
+            f"{changed} transactions renamed to {new_name}.", Palette.ACCENT
+        )
 
     def _remove_statement(self, source_file: str) -> None:
         count = 0

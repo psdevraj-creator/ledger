@@ -925,5 +925,59 @@ finally:
     release_server.shutdown()
 
 # ---------------------------------------------------------------------------
+# 13. Accounts
+# ---------------------------------------------------------------------------
+
+print("accounts")
+acct_store = L.Store(tmp / "accounts.db")
+acct_rows = []
+for index, (account, amount) in enumerate(
+    [
+        ("Current", -10.0), ("Current", -20.0),
+        ("Credit card", -30.0), ("Credit card", -40.0), ("Credit card", 5.0),
+    ]
+):
+    day = date(2026, 10, 1 + index)
+    description = f"ROW {index}"
+    acct_rows.append(
+        {
+            "day": day,
+            "amount": amount,
+            "description": description,
+            "category_id": None,
+            "hash": L.transaction_hash(day, amount, description),
+            "account": account,
+            "source_file": "mix.csv",
+        }
+    )
+acct_store.insert_transactions(acct_rows)
+accounts = acct_store.accounts()
+by_name = {str(row["account"]): int(row["rows"]) for row in accounts}
+equal("two accounts listed", len(by_name), 2)
+equal("current count", by_name.get("Current"), 2)
+equal("credit count", by_name.get("Credit card"), 3)
+
+window_start, window_end = date(2026, 10, 1), date(2026, 10, 31)
+scoped = L.period_records(acct_store, {}, window_start, window_end, account="Credit card")
+equal("scope narrows records", len(scoped), 3)
+equal("unknown scope returns nothing",
+      len(L.period_records(acct_store, {}, window_start, window_end, account="Nope")), 0)
+equal("no scope returns everything",
+      len(L.period_records(acct_store, {}, window_start, window_end)), 5)
+
+equal("rename moves every row", acct_store.rename_account("Credit card", "Amex"), 3)
+equal("still two accounts", len(acct_store.accounts()), 2)
+renamed = L.period_records(acct_store, {}, window_start, window_end, account="Amex")
+equal("renamed rows visible under the new name", len(renamed), 3)
+equal("old name is gone",
+      len(L.period_records(acct_store, {}, window_start, window_end, account="Credit card")), 0)
+
+equal("renaming onto an existing account merges", acct_store.rename_account("Amex", "Current"), 3)
+merged = acct_store.accounts()
+equal("one account after merge", len(merged), 1)
+equal("merge keeps every row", int(merged[0]["rows"]), 5)
+equal("renaming to itself does nothing", acct_store.rename_account("Current", "Current"), 0)
+
+# ---------------------------------------------------------------------------
 print(f"\n{PASS} passed, {FAIL} failed")
 raise SystemExit(1 if FAIL else 0)

@@ -63,6 +63,28 @@ def main() -> int:
           str(first["values"][3]).startswith(("-", "+")),
           first["values"][3])
 
+    # account scope narrows the ledger, and clears again
+    total_rows = len(rows)
+    app.account_scope = "No Such Account"
+    ledger_page.refresh()
+    app.update()
+    check("account scope filters the ledger",
+          len(ledger_page.tree.get_children()) == 0,
+          len(ledger_page.tree.get_children()))
+    app.account_scope = None
+    ledger_page.refresh()
+    app.update()
+    check("clearing the scope restores rows",
+          len(ledger_page.tree.get_children()) == total_rows,
+          f"{len(ledger_page.tree.get_children())} of {total_rows}")
+    account_count = len(store.accounts())
+    app._sync_header()
+    app.update()
+    visible = app.account_menu.winfo_manager() != ""
+    check("account selector appears only with several accounts",
+          visible == (account_count > 1),
+          f"{account_count} accounts, manager={app.account_menu.winfo_manager()}")
+
     plan = app.pages["plan"]
     app.show_page("plan")
     app.update()

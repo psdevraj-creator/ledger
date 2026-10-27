@@ -161,6 +161,19 @@ cycle** only. If you imported a year of history and the list looks short, switch
 **All time** at the top right. The footer tells you which range you are looking at and how
 many rows it contains.
 
+### Accounts
+
+Every statement is imported into one account — the field in the review window, defaulting
+to the file name. Two things follow from that:
+
+**Rename an account.** Settings → **Accounts** → Rename. Every transaction on it takes the
+new name. If you type a name that already exists, the two accounts merge.
+
+**Analyse one account.** As soon as there is more than one, a selector appears in the
+header beside the date range. Everything follows it — the dashboard figures, both charts,
+the transaction list, the goal calculation and what gets sent for analysis. Transfers still
+pair across accounts, so a movement between your own accounts never appears as spending.
+
 **Two things to check in the preview:**
 
 1. **Signs.** If the statement shows spending as a positive number with no debit/credit
