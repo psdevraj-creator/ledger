@@ -118,13 +118,23 @@ _SCALE = {
 }
 
 
+_FAMILY = (
+    "Segoe UI"
+    if sys.platform == "win32"
+    else "Helvetica Neue"
+    if sys.platform == "darwin"
+    else "DejaVu Sans"
+)
+_MONO_FAMILY = "Consolas" if sys.platform == "win32" else "Menlo"
+
+
 def font(size: int = 11, weight: str = "normal") -> tuple[str, int, str]:
     """Type scale: sizes are authored small and rendered one or two steps larger."""
-    return ("Segoe UI", _SCALE.get(size, size), weight)
+    return (_FAMILY, _SCALE.get(size, size), weight)
 
 
 def mono(size: int = 10) -> tuple[str, int, str]:
-    return ("Consolas", _SCALE.get(size, size), "normal")
+    return (_MONO_FAMILY, _SCALE.get(size, size), "normal")
 
 
 # ---------------------------------------------------------------------------
@@ -140,11 +150,22 @@ def app_dir() -> Path:
 
 
 def database_path() -> Path:
-    return app_dir() / DB_FILENAME
+    return data_dir() / DB_FILENAME
 
 
 def backup_dir() -> Path:
-    return app_dir() / BACKUP_DIRNAME
+    return data_dir() / BACKUP_DIRNAME
+
+
+def data_dir() -> Path:
+    """Where user data lives.
+
+    On macOS a frozen app runs from inside its bundle, which is replaced on
+    upgrade, so the database goes to Application Support instead.
+    """
+    if sys.platform == "darwin" and getattr(sys, "frozen", False):
+        return Path.home() / "Library" / "Application Support" / APP_NAME
+    return app_dir()
 
 
 def resource_path(relative: str) -> Path:
@@ -3832,6 +3853,8 @@ def find_chrome() -> Path | None:
         Path(os.environ.get("PROGRAMFILES(X86)", "C:/Program Files (x86)"))
         / "Google/Chrome/Application/chrome.exe",
         Path(os.environ.get("LOCALAPPDATA", "")) / "Google/Chrome/Application/chrome.exe",
+        Path("/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"),
+        Path.home() / "Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
     ]
     for candidate in candidates:
         if candidate.is_file():

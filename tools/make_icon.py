@@ -52,6 +52,9 @@ def main() -> int:
     png_path = ASSETS / "ledger-256.png"
     master.resize((256, 256), Image.LANCZOS).save(png_path, "PNG")
 
+    large_path = ASSETS / "ledger-1024.png"
+    master.save(large_path, "PNG")
+
     ico_path = ASSETS / "ledger.ico"
     frames = [master.resize((s, s), Image.LANCZOS) for s in SIZES]
     frames[-1].save(ico_path, format="ICO", sizes=[(s, s) for s in SIZES])
