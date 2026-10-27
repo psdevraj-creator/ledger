@@ -1,7 +1,7 @@
 # Ledger
 
-A personal finance desktop app for Windows. Import bank statements, see where the money
-went, and work out what a savings goal needs each month.
+A personal finance desktop app for Windows and macOS. Import bank statements, see where the
+money went, and work out what your savings goals need each month.
 
 Everything stays on your computer. One SQLite file, no account, no sign-in, no cloud.
 
@@ -29,13 +29,16 @@ Everything stays on your computer. One SQLite file, no account, no sign-in, no c
   the rows it brought in.
 - **Several goals at once.** Each has its own target, deadline and share of what you save,
   with a bar chart showing which ones land in time and which slip.
+- **A projection built on your whole history.** The monthly pot is the average net of your
+  completed cycles, not one month - so a heavy month cannot flatten the plan. A 1-20% cut
+  slider raises the pot and every goal recalculates at once.
 - **Analysis without the cloud.** Five deterministic checks (spikes, repeating charges,
   possible double charges, movers, goal pace) run in plain Python. A local model turns them
   into sentences. Only open-ended questions go to Gemini, and only after you agree.
 
 ## Install
 
-Download `Ledger-1.1.2-x64.msi` from [Releases](../../releases) and run it.
+Download `Ledger-1.4.0-x64.msi` from [Releases](../../releases) and run it.
 
 - Installs **per user** to `%LOCALAPPDATA%\Programs\Ledger` — no administrator rights and no
   UAC prompt.
