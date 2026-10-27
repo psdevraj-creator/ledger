@@ -27,8 +27,8 @@ Everything stays on your computer. One SQLite file, no account, no sign-in, no c
   header selector once you have more than one.
 - **Undo an import.** Settings lists every imported statement; removing one deletes exactly
   the rows it brought in.
-- **Goals and forecasts.** Required monthly rate, and a projection with a 1–20% spending cut
-  you can dial in while watching the line move.
+- **Several goals at once.** Each has its own target, deadline and share of what you save,
+  with a bar chart showing which ones land in time and which slip.
 - **Analysis without the cloud.** Five deterministic checks (spikes, repeating charges,
   possible double charges, movers, goal pace) run in plain Python. A local model turns them
   into sentences. Only open-ended questions go to Gemini, and only after you agree.

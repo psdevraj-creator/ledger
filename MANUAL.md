@@ -239,31 +239,45 @@ you can't pair, a one-off that would distort the month.
 
 ## 7. Goals and the forecast
 
-On the **Plan** screen:
+**Plan** holds a list of goals. Each one has its own target, deadline, amount already saved
+and share of what you save.
+
+### Adding a goal
+
+Press **Add**:
 
 | Field | Meaning |
 |---|---|
-| Target amount | What you are saving for |
-| Months to save | Your deadline |
-| Already saved | What you have put aside so far |
+| Name | Anything you will recognise, e.g. *House deposit* |
+| Target amount | What that goal needs |
+| Months to reach it | Its own deadline |
+| Already saved | What you have already put aside for it |
+| Share of the monthly pot (%) | How much of your monthly saving goes here |
 
-Press **Recalculate**. You get:
+Shares should add up to **100%**. Above 100 they are scaled down proportionally and the page
+says so; below 100 the remainder is shown as *not yet allocated*.
 
-- **Required each month** - target minus what you have, divided by the months.
-- **Average net per month** - what you keep in a typical cycle, averaged over your
-  **completed** billing cycles. One heavy month can no longer flatten the whole plan; the
-  label beside it says how many cycles it used.
-- **Shortfall** - the gap between the two.
-- **Months at current rate** - when you would get there at this pace.
-- **Months after the cut** - the same, with spending trimmed by the percentage on the slider.
+### The pot
 
-**The cut slider** runs from **1% to 20%** of your average monthly spending. Drag it and the
-projection updates immediately; the setting is remembered. The chart draws two lines against
-the target - where you are heading now, and where you would be heading with that cut.
+**Monthly pot after the cut** is what you actually save in a typical month - the average net
+of your **completed** billing cycles - with the cut applied. Because it is an average, one
+heavy month can no longer flatten the plan; the label tells you how many cycles it used.
 
-Percentages are deliberately small: a plan that assumes you will halve your spending is a
-plan you will abandon. If nothing between 1% and 20% reaches the target, the honest answer is
-that either the target or the timeframe has to move.
+**The cut slider** runs from **1% to 20%** of your average monthly spending. Drag it and every
+goal recalculates at once. Percentages are deliberately small: a plan that assumes you will
+halve your spending is a plan you will abandon.
+
+### Reading the chart
+
+One horizontal bar per goal: **how many months it takes** to reach that target at its
+allocated amount. The little tick on each bar is that goal's deadline.
+
+- Bar **ends before** the tick - green, on time.
+- Bar **runs past** the tick - red, so you know which goal is behind.
+- **Not at this rate** - its allocation is zero or negative; nothing is being saved for it.
+
+The list on the left shows each goal's allocated amount per month, coloured the same way, and
+**Edit** lets you change any of it.
 
 If your net is zero or negative it says *not at this rate* rather than inventing a date.
 
