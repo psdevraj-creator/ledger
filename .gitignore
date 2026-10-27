@@ -15,6 +15,7 @@ _backups/
 .nano-profile/
 smoke_report.txt
 ledger_error.log
+release-notes.md
 
 # Python
 __pycache__/
