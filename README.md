@@ -25,7 +25,7 @@ Everything stays on your computer. One SQLite file, no account, no sign-in, no c
 
 ## Install
 
-Download `Ledger-1.1.1-x64.msi` from [Releases](../../releases) and run it.
+Download `Ledger-1.1.2-x64.msi` from [Releases](../../releases) and run it.
 
 - Installs **per user** to `%LOCALAPPDATA%\Programs\Ledger` — no administrator rights and no
   UAC prompt.
@@ -37,10 +37,21 @@ Windows 10 or 11, 64-bit.
 
 ### macOS
 
-A DMG is produced for Apple Silicon by `.github/workflows/macos.yml`. It is unsigned, so the
-first launch needs right-click → Open. Your data lives in
-`~/Library/Application Support/Ledger`, not inside the app bundle — bundles are replaced on
-upgrade.
+Two builds, because the two kinds of Mac cannot run each other's binaries:
+
+| Your Mac | Download |
+|---|---|
+| **Apple Silicon** — M1, M2, M3, M4 | `Ledger-1.1.2-arm64.dmg` |
+| **Intel** — Core i5, i7, i9, Xeon | `Ledger-1.1.2-x86_64.dmg` |
+
+Not sure which you have? **Apple menu → About This Mac**. Look at **Chip** (says "Apple M…"
+→ Apple Silicon) or **Processor** (says "Intel Core…" → Intel).
+
+Open the DMG, drag **Ledger** to Applications, then **right-click the app → Open** the first
+time — neither build is signed, and macOS blocks unsigned apps on a normal double-click.
+
+Your data lives in `~/Library/Application Support/Ledger`, outside the app bundle, so
+replacing the app on upgrade never touches it.
 
 ## Optional extras
 
