@@ -91,7 +91,14 @@ def main() -> int:
     check("required figure shown", L.CURRENCY in plan.required_label.cget("text"),
           plan.required_label.cget("text"))
     lines = plan.chart.figure.axes[0].lines
-    check("three projection tracks plus target", len(lines) >= 4, len(lines))
+    check("projection track, cut track and target line", len(lines) >= 3, len(lines))
+    legend_labels = [
+        text.get_text() for text in plan.chart.figure.axes[0].get_legend().get_texts()
+    ]
+    check("legend names the cut", any("cut by" in label for label in legend_labels),
+          legend_labels)
+    check("cut slider defaults into range", 1 <= int(plan.cut_slider.get()) <= 20,
+          plan.cut_slider.get())
     check("months readout", plan.metrics["months_now"].cget("text") != "\u2014",
           plan.metrics["months_now"].cget("text"))
 

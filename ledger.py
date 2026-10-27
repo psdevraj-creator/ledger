@@ -3948,7 +3948,38 @@ class PlanPage(Page):
             fg_color=Palette.RAISED, hover_color=Palette.BORDER, border_width=1,
             border_color=Palette.BORDER, text_color=Palette.TEXT, font=font(10, "bold"),
             command=lambda: self._calculate(save=True),
-        ).grid(row=5, column=0, sticky="ew", padx=20, pady=(4, 18))
+        ).grid(row=5, column=0, columnspan=2, sticky="ew", padx=20, pady=(4, 12))
+
+        cut_box = ctk.CTkFrame(form, fg_color="transparent")
+        cut_box.grid(row=15, column=0, columnspan=2, sticky="ew", padx=20, pady=(0, 12))
+        cut_box.grid_columnconfigure(0, weight=1)
+        cut_head = ctk.CTkFrame(cut_box, fg_color="transparent")
+        cut_head.grid(row=0, column=0, sticky="ew")
+        cut_head.grid_columnconfigure(0, weight=1)
+        ctk.CTkLabel(
+            cut_head, text="Cut spending by", font=font(9),
+            text_color=Palette.MUTED, anchor="w",
+        ).grid(row=0, column=0, sticky="w")
+        self.cut_label = ctk.CTkLabel(
+            cut_head, text="10%", font=font(9, "bold"),
+            text_color=Palette.ACCENT, anchor="e",
+        )
+        self.cut_label.grid(row=0, column=1, sticky="e")
+        self.cut_slider = ctk.CTkSlider(
+            cut_box,
+            from_=1,
+            to=20,
+            number_of_steps=19,
+            height=16,
+            corner_radius=8,
+            fg_color=Palette.RAISED,
+            progress_color=Palette.ACCENT,
+            button_color=Palette.ACCENT,
+            button_hover_color=Palette.ACCENT_HOVER,
+            command=self._cut_changed,
+        )
+        self.cut_slider.grid(row=1, column=0, sticky="ew", pady=(2, 0))
+        self.cut_slider.set(self._saved_cut())
 
         ctk.CTkFrame(form, height=1, fg_color=Palette.BORDER).grid(
             row=6, column=0, sticky="ew", padx=20
@@ -3962,14 +3993,18 @@ class PlanPage(Page):
             form, text="\u2014", font=font(26, "bold"), text_color=Palette.ACCENT, anchor="w"
         )
         self.required_label.grid(row=8, column=0, sticky="w", padx=20, pady=(2, 16))
+        self.basis_label = ctk.CTkLabel(
+            form, text="", font=font(8), text_color=Palette.FAINT, anchor="e",
+            justify="right", wraplength=140,
+        )
+        self.basis_label.grid(row=8, column=1, sticky="se", padx=(0, 20), pady=(2, 16))
 
         self.metrics: dict[str, ctk.CTkLabel] = {}
         rows = (
-            ("net", "Net this cycle"),
+            ("net", "Average net per month"),
             ("shortfall", "Shortfall each month"),
             ("months_now", "Months at current rate"),
-            ("months_half", "Months after 50% cut"),
-            ("months_full", "Months after 100% cut"),
+            ("months_cut", "Months after the cut"),
         )
         for index, (key, caption) in enumerate(rows):
             row = 9 + index
@@ -3984,10 +4019,10 @@ class PlanPage(Page):
 
         ctk.CTkLabel(
             form,
-            text="Potential savings are the payments you flagged in the transaction list.",
+            text="The cut applies to your average monthly spending, not to a single month.",
             font=font(8), text_color=Palette.FAINT, anchor="w",
             wraplength=290, justify="left",
-        ).grid(row=14, column=0, sticky="w", padx=20, pady=(18, 18))
+        ).grid(row=14, column=0, columnspan=2, sticky="w", padx=20, pady=(14, 6))
 
         self.chart = ChartPanel(self, "Projection", "balance against target")
         self.chart.grid(row=0, column=1, sticky="nsew")
@@ -4025,20 +4060,74 @@ class PlanPage(Page):
     def refresh(self) -> None:
         self._calculate(save=False)
 
+    def _basis(self) -> tuple[float, float, int]:
+        """Average net and average spending per completed cycle.
+
+        A single cycle is a bad basis for a projection: one large purchase makes
+        the whole plan look impossible. Completed cycles only, so a half-finished
+        month does not drag the average down.
+        """
+        rows = self.app.transactions(date(1900, 1, 1), date(2100, 1, 1))
+        buckets: dict[date, list[sqlite3.Row]] = {}
+        for row in rows:
+            day = date.fromisoformat(str(row["txn_date"]))
+            cycle_start, _cycle_end = cycle_containing(day, self.app.cycle_anchor)
+            buckets.setdefault(cycle_start, []).append(row)
+        if not buckets:
+            return 0.0, 0.0, 0
+
+        today = date.today()
+        completed = [
+            (start, items)
+            for start, items in buckets.items()
+            if cycle_containing(start, self.app.cycle_anchor)[1] < today
+        ]
+        if not completed:
+            completed = list(buckets.items())
+
+        nets: list[float] = []
+        spends: list[float] = []
+        for start, items in sorted(completed):
+            end = cycle_containing(start, self.app.cycle_anchor)[1]
+            cycle_summary = summarise(items, start, end)
+            nets.append(cycle_summary.net)
+            spends.append(cycle_summary.expenses)
+        count = len(nets)
+        return sum(nets) / count, sum(spends) / count, count
+
+    def _saved_cut(self) -> int:
+        try:
+            value = int(float(self.store.get_setting("plan_cut_pct", "10") or 10))
+        except ValueError:
+            return 10
+        return min(max(value, 1), 20)
+
+    def _cut_changed(self, value: float) -> None:
+        percent = int(round(value))
+        self.cut_label.configure(text=f"{percent}%")
+        self.store.set_setting("plan_cut_pct", str(percent))
+        self._calculate(save=False)
+
     def _calculate(self, save: bool) -> None:
         target = parse_amount(self.target_entry.get()) or 0.0
         months = parse_amount(self.months_entry.get()) or 0
         saved = parse_amount(self.saved_entry.get()) or 0.0
         months = int(min(max(months, 0), 240))
 
-        start, end = self.app.cycle()
-        rows = self.app.transactions(start, end)
-        summary = summarise(rows, start, end)
         required = (target - saved) / months if months > 0 else 0.0
-        net = summary.net
+        net, spending, cycles = self._basis()
+        percent = int(round(self.cut_slider.get()))
+        cut_gain = spending * percent / 100.0
+        projected = net + cut_gain
         shortfall = required - net
-        half = net + summary.flagged * 0.5
-        full = net + summary.flagged
+
+        self.basis_label.configure(
+            text=(
+                f"Average of {cycles} completed cycle{'s' if cycles != 1 else ''}"
+                if cycles
+                else "No transactions yet"
+            )
+        )
 
         self.required_label.configure(
             text=money(max(required, 0.0), decimals=0),
@@ -4053,15 +4142,16 @@ class PlanPage(Page):
             text_color=Palette.RED if shortfall > 0 else Palette.ACCENT,
         )
         self.metrics["months_now"].configure(text=self._format_months(saved, target, net))
-        self.metrics["months_half"].configure(text=self._format_months(saved, target, half))
-        self.metrics["months_full"].configure(text=self._format_months(saved, target, full))
+        self.metrics["months_cut"].configure(
+            text=self._format_months(saved, target, projected)
+        )
 
         if save:
             self.store.set_setting("goal_target", f"{target:.2f}")
             self.store.set_setting("goal_months", str(months))
             self.store.set_setting("goal_saved", f"{saved:.2f}")
 
-        self._draw_projection(target, saved, months, net, half, full)
+        self._draw_projection(target, saved, months, net, projected, percent)
 
     def _format_months(self, saved: float, target: float, rate: float) -> str:
         if target <= 0:
@@ -4076,15 +4166,21 @@ class PlanPage(Page):
         return f"{reached} month{'s' if reached != 1 else ''}"
 
     def _draw_projection(
-        self, target: float, saved: float, months: int, net: float, half: float, full: float
+        self,
+        target: float,
+        saved: float,
+        months: int,
+        net: float,
+        projected: float,
+        percent: int,
     ) -> None:
         key = (
             round(target, 2),
             round(saved, 2),
             months,
             round(net, 2),
-            round(half, 2),
-            round(full, 2),
+            round(projected, 2),
+            percent,
         )
         if key == self._projection_key:
             return
@@ -4092,15 +4188,14 @@ class PlanPage(Page):
         if target <= 0:
             self.chart.empty("Set a target to see the projection")
             return
-        needed = months_to_target(saved, target, max(net, 0.01)) or months or 12
+        needed = months_to_target(saved, target, max(projected, 0.01)) or months or 12
         horizon = int(min(max(months, needed, 6), 60))
 
         plot = self.chart.axes()
         positions = list(range(horizon + 1))
         tracks = (
             ("As things are", net, Palette.MUTED),
-            ("Flagged spending down 50%", half, Palette.BLUE),
-            ("Flagged spending gone", full, Palette.ACCENT),
+            (f"Spending cut by {percent}%", projected, Palette.ACCENT),
         )
         for label, rate, colour in tracks:
             values = [saved + max(rate, 0.0) * index for index in positions]

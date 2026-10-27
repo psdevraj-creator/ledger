@@ -249,14 +249,23 @@ On the **Plan** screen:
 
 Press **Recalculate**. You get:
 
-- **Required each month** — target minus what you have, divided by the months.
-- **Net this cycle** — what you actually kept after spending.
-- **Shortfall** — the gap, if there is one.
-- **Months at current rate** — when you would get there at this pace.
-- **Months after a 50% / 100% cut** — the same, assuming you cut flagged spending.
+- **Required each month** - target minus what you have, divided by the months.
+- **Average net per month** - what you keep in a typical cycle, averaged over your
+  **completed** billing cycles. One heavy month can no longer flatten the whole plan; the
+  label beside it says how many cycles it used.
+- **Shortfall** - the gap between the two.
+- **Months at current rate** - when you would get there at this pace.
+- **Months after the cut** - the same, with spending trimmed by the percentage on the slider.
 
-The chart draws all three at once against the target line. If your net is zero or negative
-it says *not at this rate* rather than inventing a date.
+**The cut slider** runs from **1% to 20%** of your average monthly spending. Drag it and the
+projection updates immediately; the setting is remembered. The chart draws two lines against
+the target - where you are heading now, and where you would be heading with that cut.
+
+Percentages are deliberately small: a plan that assumes you will halve your spending is a
+plan you will abandon. If nothing between 1% and 20% reaches the target, the honest answer is
+that either the target or the timeframe has to move.
+
+If your net is zero or negative it says *not at this rate* rather than inventing a date.
 
 You can ask **Insights** the same question in words.
 
