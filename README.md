@@ -61,8 +61,12 @@ pyinstaller --noconfirm --clean --windowed --onedir --name Ledger ^
 Then build the installer with [WiX](https://wixtoolset.org) 5:
 
 ```
-wix build installer.wxs -arch x64 -o Ledger-1.0.0-x64.msi
+python tools/make_payload.py
+wix build installer.wxs payload.wxs -arch x64 -o Ledger-1.0.0-x64.msi
 ```
+
+`make_payload.py` reads the PyInstaller output and generates the directory tree for
+`payload.wxs`. It has to be regenerated after every PyInstaller build.
 
 ## Tests
 

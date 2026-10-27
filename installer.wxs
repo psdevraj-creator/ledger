@@ -35,13 +35,9 @@
     </StandardDirectory>
 
     <Feature Id="Main" Title="Ledger" Level="1">
-      <ComponentGroupRef Id="Payload" />
+      <FeatureGroupRef Id="Payload" />
       <ComponentRef Id="ApplicationShortcuts" />
     </Feature>
-
-    <ComponentGroup Id="Payload" Directory="INSTALLFOLDER">
-      <Files Include="dist\Ledger\_internal\**" />
-    </ComponentGroup>
 
   </Package>
 
