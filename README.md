@@ -23,6 +23,8 @@ Everything stays on your computer. One SQLite file, no account, no sign-in, no c
   from the same window.
 - **Ignore anything that isn't yours to count.** Ignored transactions leave every figure and
   stay in the list.
+- **Flag potential savings.** Mark cuttable payments and they feed the dashboard figure and
+  the model's analysis, separately from ignoring them.
 - **Work per account.** Rename an account, and narrow every screen to one account from the
   header selector once you have more than one.
 - **Undo an import.** Settings lists every imported statement; removing one deletes exactly
@@ -35,6 +37,8 @@ Everything stays on your computer. One SQLite file, no account, no sign-in, no c
 - **Analysis without the cloud.** Five deterministic checks (spikes, repeating charges,
   possible double charges, movers, goal pace) run in plain Python. A local model turns them
   into sentences. Only open-ended questions go to Gemini, and only after you agree.
+- **Tells you when there is a newer version.** Settings checks GitHub on request and links
+  the release; it never downloads or installs anything by itself.
 
 ## Install
 
