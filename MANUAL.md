@@ -56,6 +56,11 @@ adds a Desktop shortcut and a Start Menu entry. The app and your data live in
 
 **If you are running the Python file:** `python ledger.py`
 
+**On a Mac:** open the `.dmg`, drag **Ledger** to Applications, then right-click the app →
+**Open** the first time (it is unsigned). Your data lives in
+`~/Library/Application Support/Ledger`, outside the app bundle, so replacing the app on
+upgrade never touches it.
+
 On first launch the app creates two things next to itself:
 
 | Name | What it is |
