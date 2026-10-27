@@ -44,7 +44,7 @@ from matplotlib.figure import Figure
 matplotlib.use("TkAgg", force=True)
 
 APP_NAME = "Ledger"
-APP_VERSION = "1.1.0"
+APP_VERSION = "1.1.1"
 GITHUB_REPO = "psdevraj-creator/ledger"
 RELEASES_API = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
 RELEASES_PAGE = f"https://github.com/{GITHUB_REPO}/releases"
@@ -2003,7 +2003,8 @@ class App(ctk.CTk):
         self._set_icon()
         self.grid_columnconfigure(0, weight=0)
         self.grid_columnconfigure(1, weight=1)
-        self.grid_rowconfigure(0, weight=1)
+        self.grid_rowconfigure(0, weight=0)
+        self.grid_rowconfigure(1, weight=1)
 
         self._build_sidebar()
         self._build_header()
@@ -4826,8 +4827,6 @@ class SettingsPage(Page):
         left.grid(row=0, column=0, sticky="new", padx=(0, 6))
         right = ctk.CTkFrame(columns, fg_color="transparent")
         right.grid(row=0, column=1, sticky="new", padx=(6, 0))
-        bottom = ctk.CTkFrame(scroll, fg_color="transparent")
-        bottom.pack(fill="x")
 
         # Billing cycle --------------------------------------------------
         card = self._card(
@@ -4857,7 +4856,7 @@ class SettingsPage(Page):
 
         # Categories -----------------------------------------------------
         card = self._card(
-            scroll, "Categories", "Used by the import rules and the spending breakdown."
+            left, "Categories", "Used by the import rules and the spending breakdown."
         )
         self.category_list = ctk.CTkFrame(card, fg_color="transparent")
         self.category_list.grid(row=2, column=0, columnspan=3, sticky="ew", padx=20, pady=(12, 6))
@@ -4889,7 +4888,7 @@ class SettingsPage(Page):
 
         # Rules ----------------------------------------------------------
         card = self._card(
-            scroll,
+            left,
             "Categorisation rules",
             "The keyword list applied to every new statement line.",
         )
@@ -4902,7 +4901,7 @@ class SettingsPage(Page):
 
         # Gemini ---------------------------------------------------------
         card = self._card(
-            scroll,
+            right,
             "Gemini API key",
             "Stored on this machine, encrypted with your Windows account when available.",
         )
@@ -4950,7 +4949,7 @@ class SettingsPage(Page):
 
         # Local model ----------------------------------------------------
         card = self._card(
-            scroll,
+            right,
             "Local model",
             "Answers short questions on this machine. Chrome's built-in model is used when it "
             "is ready, otherwise a model served by Ollama. Nothing leaves the computer.",
@@ -4984,19 +4983,19 @@ class SettingsPage(Page):
 
         self.local_status = ctk.CTkLabel(
             card, text="", font=font(9), text_color=Palette.FAINT, anchor="w",
-            justify="left", wraplength=760,
+            justify="left", wraplength=520,
         )
         self.local_status.grid(row=3, column=0, columnspan=3, sticky="w", padx=20, pady=(2, 18))
 
         # Data -----------------------------------------------------------
         card = self._card(
-            scroll,
+            right,
             "Data",
             "One SQLite file, plus a timestamped copy written every time you close the app.",
         )
         ctk.CTkLabel(
             card, text=str(self.store.path), font=mono(9), text_color=Palette.MUTED,
-            anchor="w", wraplength=760, justify="left",
+            anchor="w", wraplength=520, justify="left",
         ).grid(row=2, column=0, columnspan=3, sticky="w", padx=20, pady=(12, 10))
         actions = ctk.CTkFrame(card, fg_color="transparent")
         actions.grid(row=3, column=0, columnspan=3, sticky="w", padx=20, pady=(0, 10))
@@ -5038,7 +5037,7 @@ class SettingsPage(Page):
         )
         self.update_status = ctk.CTkLabel(
             card, text="", font=font(9), text_color=Palette.FAINT, anchor="w",
-            justify="left", wraplength=760,
+            justify="left", wraplength=520,
         )
         self.update_status.grid(
             row=6, column=0, columnspan=3, sticky="w", padx=20, pady=(0, 18)
@@ -5060,7 +5059,7 @@ class SettingsPage(Page):
         ).grid(row=0, column=0, columnspan=3, sticky="w", padx=20, pady=(16, 0))
         ctk.CTkLabel(
             card, text=subtitle, font=font(9), text_color=Palette.FAINT, anchor="w",
-            justify="left", wraplength=760,
+            justify="left", wraplength=520,
         ).grid(row=1, column=0, columnspan=3, sticky="w", padx=20, pady=(3, 0))
         return card
 

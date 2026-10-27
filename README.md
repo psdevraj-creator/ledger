@@ -25,7 +25,7 @@ Everything stays on your computer. One SQLite file, no account, no sign-in, no c
 
 ## Install
 
-Download `Ledger-1.0.0-x64.msi` from [Releases](../../releases) and run it.
+Download `Ledger-1.1.1-x64.msi` from [Releases](../../releases) and run it.
 
 - Installs **per user** to `%LOCALAPPDATA%\Programs\Ledger` — no administrator rights and no
   UAC prompt.
@@ -34,6 +34,13 @@ Download `Ledger-1.0.0-x64.msi` from [Releases](../../releases) and run it.
   `.backups\` written on every exit. Uninstalling leaves your data in place.
 
 Windows 10 or 11, 64-bit.
+
+### macOS
+
+A DMG is produced for Apple Silicon by `.github/workflows/macos.yml`. It is unsigned, so the
+first launch needs right-click → Open. Your data lives in
+`~/Library/Application Support/Ledger`, not inside the app bundle — bundles are replaced on
+upgrade.
 
 ## Optional extras
 

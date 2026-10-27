@@ -94,6 +94,9 @@ def main() -> int:
     settings = app.pages["settings"]
     app.show_page("settings")
     app.update()
+    check("settings fills the window",
+          settings.winfo_height() > app.winfo_height() * 0.6,
+          f"{settings.winfo_height()} of {app.winfo_height()}")
     check("anchor menu", settings.anchor_menu.get() in {str(d) for d in range(1, 32)},
           settings.anchor_menu.get())
     check("anchor note", "Statements run" in settings.anchor_note.cget("text"),
