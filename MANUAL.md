@@ -546,8 +546,8 @@ every launch, so it takes 5–10 seconds to open.
 Two self-tests ship with the source:
 
 ```
-python check_ledger.py    # 246 checks: calendar maths, parsers, de-duplication, transfers
-python check_ui.py        #  43 checks: opens the window, visits every screen
+python check_ledger.py    # 287 checks: calendar maths, parsers, de-duplication, transfers
+python check_ui.py        #  50 checks: opens the window, visits every screen
 ```
 
 The app also accepts `--smoke`, which opens every screen, closes, and writes

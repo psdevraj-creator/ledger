@@ -100,8 +100,8 @@ app can never disagree. Both must be re-run after every PyInstaller build.
 ## Tests
 
 ```
-python check_ledger.py    # 264 checks: calendar maths, parsers, de-duplication, transfers
-python check_ui.py        #  45 checks: opens the window and visits every screen
+python check_ledger.py    # 287 checks: calendar maths, parsers, de-duplication, transfers
+python check_ui.py        #  50 checks: opens the window, visits every screen
 ```
 
 `ledger.py --smoke` opens every screen, closes, and writes `smoke_report.txt` next to the
