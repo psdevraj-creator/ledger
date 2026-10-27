@@ -44,7 +44,7 @@ from matplotlib.figure import Figure
 matplotlib.use("TkAgg", force=True)
 
 APP_NAME = "Ledger"
-APP_VERSION = "1.1.1"
+APP_VERSION = "1.1.2"
 GITHUB_REPO = "psdevraj-creator/ledger"
 RELEASES_API = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
 RELEASES_PAGE = f"https://github.com/{GITHUB_REPO}/releases"

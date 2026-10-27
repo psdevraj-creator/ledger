@@ -11,8 +11,18 @@ permissions:
 
 jobs:
   dmg:
-    name: Build DMG (Apple Silicon)
-    runs-on: macos-latest
+    name: DMG (${{ matrix.arch }})
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: arm64
+            runner: macos-latest
+            note: Apple Silicon
+          - arch: x86_64
+            runner: macos-13
+            note: Intel
 
     steps:
       - uses: actions/checkout@v4
@@ -20,6 +30,11 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.14"
+
+      - name: Show interpreter
+        run: |
+          python -VV
+          uname -m
 
       - name: Install dependencies
         run: |
@@ -64,6 +79,7 @@ jobs:
         run: |
           test -d "dist/Ledger.app" || (echo "no app bundle produced" && exit 1)
           test -x "dist/Ledger.app/Contents/MacOS/Ledger" || (echo "no executable inside" && exit 1)
+          file "dist/Ledger.app/Contents/MacOS/Ledger"
           ls -lh "dist/Ledger.app/Contents/MacOS/Ledger"
 
       - name: Build DMG
@@ -74,11 +90,11 @@ jobs:
           cp -R "dist/Ledger.app" "dist/dmg/Ledger.app"
           ln -s /Applications "dist/dmg/Applications"
           hdiutil create -volname "Ledger" -srcfolder "dist/dmg" -ov -format UDZO \
-            "dist/Ledger-${VERSION}-arm64.dmg"
+            "dist/Ledger-${VERSION}-${{ matrix.arch }}.dmg"
           ls -lh dist/*.dmg
 
       - uses: actions/upload-artifact@v4
         with:
-          name: Ledger-dmg
+          name: Ledger-dmg-${{ matrix.arch }}
           path: dist/*.dmg
           if-no-files-found: error
