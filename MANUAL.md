@@ -86,7 +86,8 @@ largest payments.
 
 **Transactions** — every line in the cycle. Click a category to change it. Click the
 potential-saving column to flag a payment. Filter with the row of buttons or search by
-description or category.
+description or category. The **All time** switch shows your entire history instead of just
+the current cycle.
 
 **Plan** — your target, the months you have, and what that requires each month. The chart
 shows three futures: doing nothing, cutting flagged spending in half, cutting it entirely.
@@ -151,6 +152,15 @@ The app finds the date, description and amount columns by their headings, includ
 `Posted Date`, `Narrative`, `Money Out` and similar. If there are no headings at all it
 works them out from the shape of the data.
 
+**Debit and credit columns** are read as a pair: money out becomes negative, money in
+positive. Statements that keep spending in a `Debit Amount` column and income in
+`Credit Amount` are handled correctly.
+
+**Where did my transactions go?** The Transactions screen shows the **current billing
+cycle** only. If you imported a year of history and the list looks short, switch on
+**All time** at the top right. The footer tells you which range you are looking at and how
+many rows it contains.
+
 **Two things to check in the preview:**
 
 1. **Signs.** If the statement shows spending as a positive number with no debit/credit
@@ -162,8 +172,23 @@ works them out from the shape of the data.
 
 ## 5. Fixing a wrong category
 
-Click the category cell in the transaction list. A dropdown appears in place. Choose the
-right category, and a window asks how far to apply it:
+Click the **category cell** in the transaction list. A window opens showing the payment, its
+amount, and every category:
+
+```
+┌ Change category ──────────────────────────────┐
+│ Tesco Stores 3421                  −£45.20    │
+│ ┌ Search categories ────────────────────────┐ │
+│ │ Groceries & Dining          ✓             │ │
+│ │ Transport & Travel                        │ │
+│ │ +  Create new category                    │ │  ← last option
+│ └───────────────────────────────────────────┘ │
+│ ☐ Ignore this transaction                     │
+│                            Cancel   Apply     │
+└───────────────────────────────────────────────┘
+```
+
+Choose a category and press **Apply**. It then asks how far to apply it:
 
 | Option | What it does |
 |---|---|
@@ -172,27 +197,30 @@ right category, and a window asks how far to apply it:
 | **Every transaction containing a keyword** | Changes anything containing a keyword you choose, and saves a rule. |
 
 The third one is the useful one. A line reading `TESCO STORES 3421 LONDON` becomes
-`Tesco` — every Tesco payment, past and future, is then categorised. The box under the
+`Tesco` — every Tesco payment, past and future, is then categorised. The count under the
 option shows how many lines would change before you commit.
+
+**Create new category** is the last entry in the list. Type a name, press **Add**, then
+**Apply** — the new category exists immediately and is used from then on.
 
 Rules you create take priority over the built-in list. To see or remove them, go to
 **Settings → Categorisation rules → Open rule list**.
 
 ---
 
-## 6. Marking potential savings
+## 6. Savings flags and ignoring transactions
 
-On the Transactions screen, the last column is **Potential saving**. Click a row to flag it,
-click again to unflag.
+**Potential saving** — click the last column of a row to flag it. Flagged payments colour
+the row, add up into the Potential savings figure, drive the "what if" lines on the Plan
+screen, and are listed for the model when you ask for analysis.
 
-This is how you tell the app "this is not essential". Flagged payments:
+**Ignoring a transaction** — open the category window and tick **Ignore this transaction**.
+Ignored payments are greyed out and **excluded from every figure**: income, spending, the
+category chart, the six-month trend, the goal projection and the analysis. They stay in the
+list so you can find and un-ignore them; the filter button at the top has an **Ignored** tab.
 
-- colour the row,
-- add up into the Potential savings figure on the dashboard,
-- drive the two "what if" lines on the Plan screen,
-- and are listed for the model when you ask for analysis.
-
-Good candidates: takeaways, streaming services you forget about, the gym you never visit.
+Use it for anything that isn't really yours to count — a payment you reversed, a transfer
+you can't pair, a one-off that would distort the month.
 
 ---
 
@@ -463,6 +491,14 @@ The newest 30 are kept and older ones are removed automatically.
 
 To make one on demand: **Settings → Data → Back up now**.
 To see them: **Settings → Data → Open backup folder**.
+
+### Removing an imported statement
+
+**Settings → Imported statements** lists every file you have imported, with its row count
+and date range. **Remove** deletes exactly the rows that file brought in — nothing else.
+Use it when a statement was imported wrongly, then import the corrected file.
+
+Backups already written are unaffected, so a removal is still recoverable from `.backups/`.
 
 ### Restoring
 

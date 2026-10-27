@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import http.server
 import json
+import sqlite3
 import tempfile
 import threading
 from datetime import date, timedelta
@@ -403,7 +404,13 @@ dupe.write_text(
     encoding="utf-8",
 )
 prepared = L.prepare_import(store, L.parse_statement(dupe), "Barclays")
-equal("intra-file duplicate flagged", sum(1 for r in prepared if r.is_duplicate), 1)
+equal("intra-file duplicates are both kept",
+      sum(1 for r in prepared if r.is_duplicate), 0)
+check("identical lines get distinct hashes", len({r.hash for r in prepared}) == 2)
+L.commit_import(store, prepared)
+again = L.prepare_import(store, L.parse_statement(dupe), "Barclays")
+equal("re-importing that file still dedupes both",
+      sum(1 for r in again if r.is_duplicate), 2)
 
 # ---------------------------------------------------------------------------
 # 8. Batch import across several statements
@@ -638,6 +645,118 @@ try:
     check("legacy xls rejected", False, "no error raised")
 except L.ParseError as error:
     check("legacy xls asks for xlsx", "xlsx" in str(error).lower(), str(error))
+
+# ---------------------------------------------------------------------------
+# 10b. Bank export shapes that used to corrupt the figures
+# ---------------------------------------------------------------------------
+
+print("bank export shapes")
+
+bank_headers = [
+    "Transaction Date", "Transaction Type", "Sort Code", "Account Number",
+    "Transaction Description", "Debit Amount", "Credit Amount", "Balance",
+]
+bank_mapping = L.map_columns(bank_headers)
+check("debit and credit mapped",
+      bank_mapping.get("debit") == 5 and bank_mapping.get("credit") == 6,
+      bank_mapping)
+check("amount does not claim the debit column",
+      bank_mapping.get("amount") not in (5, 6), bank_mapping)
+
+bank_file = tmp / "apostrophe.csv"
+bank_file.write_text(
+    "Transaction Date,Transaction Type,Sort Code,Account Number,"
+    "Transaction Description,Debit Amount,Credit Amount,Balance\n"
+    "27/10/2026,FPO,'11-52-26,01496868,ZOPA,1003.86,,-248.76\n"
+    "21/10/2026,BGC,'11-52-26,01496868,ADYEN N.V.,,9.46,755.10\n"
+    "24/09/2026,CHG,'11-52-26,01496868,DAILY OD INT,.34,,-376.18\n",
+    encoding="utf-8",
+)
+parsed = L.parse_statement(bank_file)
+equal("apostrophe sort codes do not merge rows", len(parsed.rows), 3)
+equal("debit becomes negative", parsed.rows[0]["amount"], -1003.86)
+equal("credit stays positive", parsed.rows[1]["amount"], 9.46)
+equal("leading-dot amount parses", parsed.rows[2]["amount"], -0.34)
+equal("first description intact", parsed.rows[0]["description"], "ZOPA")
+equal("first date intact", parsed.rows[0]["day"], date(2026, 10, 27))
+
+# ignored transactions drop out of every figure
+ignore_store = L.Store(tmp / "ignore.db")
+ignore_rows = [
+    {
+        "day": date(2026, 10, 2),
+        "amount": -80.0,
+        "description": "IGNORED PAYMENT",
+        "category_id": None,
+        "hash": L.transaction_hash(date(2026, 10, 2), -80.0, "IGNORED PAYMENT"),
+        "account": "Barclays",
+        "source_file": "ignore.csv",
+    },
+    {
+        "day": date(2026, 10, 3),
+        "amount": -20.0,
+        "description": "COUNTED PAYMENT",
+        "category_id": None,
+        "hash": L.transaction_hash(date(2026, 10, 3), -20.0, "COUNTED PAYMENT"),
+        "account": "Barclays",
+        "source_file": "ignore.csv",
+    },
+]
+ignore_store.insert_transactions(ignore_rows)
+window = (date(2026, 10, 1), date(2026, 10, 31))
+before = L.summarise(ignore_store.transactions_between(*window), *window)
+equal("spending before ignoring", before.expenses, 100.0)
+target = [
+    row for row in ignore_store.transactions_between(*window)
+    if row["description"] == "IGNORED PAYMENT"
+][0]
+ignore_store.set_ignored(int(target["id"]), True)
+after = L.summarise(ignore_store.transactions_between(*window), *window)
+equal("ignored payment leaves spending", after.expenses, 20.0)
+equal("ignored count reported", after.ignored, 1)
+totals = L.category_totals(ignore_store.transactions_between(*window),
+                           {r["id"]: r["name"] for r in ignore_store.categories()})
+check("ignored payment leaves the category chart",
+      all(value <= 20.0 for _name, value in totals), str(totals))
+
+# statements can be listed and removed whole
+listing = ignore_store.statements()
+equal("statement listed", len(listing), 1)
+equal("statement row count", int(listing[0]["rows"]), 2)
+equal("statement removed", ignore_store.delete_statement("ignore.csv"), 2)
+equal("ledger emptied", len(ignore_store.statements()), 0)
+
+# a database from the previous version gains the new column without losing rows
+legacy = tmp / "legacy.db"
+connection = sqlite3.connect(legacy)
+connection.executescript(
+    """
+    CREATE TABLE categories (id INTEGER PRIMARY KEY AUTOINCREMENT,
+        name TEXT NOT NULL UNIQUE, kind TEXT NOT NULL DEFAULT 'expense',
+        colour TEXT NOT NULL DEFAULT '#8A93A6');
+    CREATE TABLE transactions (
+        id INTEGER PRIMARY KEY AUTOINCREMENT, txn_date TEXT NOT NULL,
+        amount REAL NOT NULL, description TEXT NOT NULL, category_id INTEGER,
+        is_transfer INTEGER NOT NULL DEFAULT 0, is_saving INTEGER NOT NULL DEFAULT 0,
+        account TEXT NOT NULL DEFAULT '', source_file TEXT NOT NULL DEFAULT '',
+        imported_at TEXT NOT NULL, hash TEXT NOT NULL UNIQUE);
+    INSERT INTO transactions
+        (txn_date, amount, description, imported_at, hash)
+        VALUES ('2026-09-01', -12.5, 'OLD ROW', '2026-09-01T00:00:00', 'old-hash');
+    """
+)
+connection.commit()
+connection.close()
+migrated = L.Store(legacy)
+columns = {row["name"] for row in migrated.conn.execute("PRAGMA table_info(transactions)")}
+check("migration adds is_ignored", "is_ignored" in columns, sorted(columns))
+kept = migrated.transactions_between(date(2000, 1, 1), date(2100, 1, 1))
+equal("migration keeps existing rows", len(kept), 1)
+equal("migrated row keeps its amount", kept[0]["amount"], -12.5)
+equal("migrated row defaults to not ignored", int(kept[0]["is_ignored"]), 0)
+check("migration wrote a backup",
+      any((tmp / ".backups").glob("*.db")), "no backup")
+migrated.close()
 
 # ---------------------------------------------------------------------------
 # 11. Ollama wire protocol (against a stub server, no Ollama needed)

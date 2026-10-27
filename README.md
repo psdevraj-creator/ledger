@@ -8,15 +8,23 @@ Everything stays on your computer. One SQLite file, no account, no sign-in, no c
 ## What it does
 
 - **Imports CSV, Excel and PDF statements** — several files at once, one per account.
+- **Reads debit and credit columns correctly** - money out is negative, money in is
+  positive, whatever the bank calls the columns.
 - **Never double-counts.** Every line is fingerprinted with SHA-256; re-importing an
-  overlapping statement skips what is already there.
+  overlapping statement skips what is already there. Genuinely repeated payments are kept.
 - **Cancels internal transfers.** £500 leaving current account and arriving on a credit
   card is one movement, not £500 earned and £500 spent — even when the two halves arrive
   in separate imports.
 - **Shifting billing cycles.** Bills on the 25th? Anchor the cycle to day 25 and everything
-  follows. Day 31 clamps safely through February and April.
+  follows. Day 31 clamps safely through February and April. An **All time** switch shows
+  your full history.
 - **Learning categories.** Change a category once and apply it to that line, that exact
-  description, or a keyword — the rule then applies to future imports.
+  description, or a keyword - the rule then applies to future imports. Create a new category
+  from the same window.
+- **Ignore anything that isn't yours to count.** Ignored transactions leave every figure and
+  stay in the list.
+- **Undo an import.** Settings lists every imported statement; removing one deletes exactly
+  the rows it brought in.
 - **Goals and forecasts.** Required monthly rate, plus what happens if you cut flagged
   spending by 50% or 100%.
 - **Analysis without the cloud.** Five deterministic checks (spikes, repeating charges,

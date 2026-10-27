@@ -44,7 +44,7 @@ from matplotlib.figure import Figure
 matplotlib.use("TkAgg", force=True)
 
 APP_NAME = "Ledger"
-APP_VERSION = "1.1.2"
+APP_VERSION = "1.2.0"
 GITHUB_REPO = "psdevraj-creator/ledger"
 RELEASES_API = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
 RELEASES_PAGE = f"https://github.com/{GITHUB_REPO}/releases"
@@ -356,6 +356,8 @@ def parse_amount(value: Any) -> float | None:
         negative = True
         text = text[1:]
 
+    if text.startswith("."):
+        text = "0" + text
     if not re.fullmatch(r"\d+(?:\.\d+)?", text):
         return None
     amount = float(text)
@@ -436,8 +438,12 @@ def normalise_text(value: Any) -> str:
     return re.sub(r"\s+", " ", str(value or "")).strip().lower()
 
 
-def transaction_hash(day: date, amount: float, description: str) -> str:
+def transaction_hash(
+    day: date, amount: float, description: str, sequence: int = 0
+) -> str:
     payload = f"{day.isoformat()}|{amount:.2f}|{normalise_text(description)}"
+    if sequence:
+        payload += f"|{sequence}"
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:40]
 
 
@@ -653,6 +659,7 @@ CREATE TABLE IF NOT EXISTS transactions (
     category_id INTEGER REFERENCES categories(id),
     is_transfer INTEGER NOT NULL DEFAULT 0,
     is_saving   INTEGER NOT NULL DEFAULT 0,
+    is_ignored  INTEGER NOT NULL DEFAULT 0,
     account     TEXT NOT NULL DEFAULT '',
     source_file TEXT NOT NULL DEFAULT '',
     imported_at TEXT NOT NULL,
@@ -683,7 +690,28 @@ class Store:
         self.conn.execute("PRAGMA foreign_keys=ON")
         self.conn.executescript(SCHEMA)
         self.conn.commit()
+        self._migrate()
         self._seed()
+
+    def _migrate(self) -> None:
+        """Add columns that later versions introduced, without touching data."""
+        columns = {
+            str(row["name"])
+            for row in self.conn.execute("PRAGMA table_info(transactions)")
+        }
+        if "is_ignored" not in columns:
+            try:
+                self.backup_now()
+            except (sqlite3.Error, OSError):
+                pass
+            self.conn.execute(
+                "ALTER TABLE transactions ADD COLUMN is_ignored INTEGER NOT NULL DEFAULT 0"
+            )
+            self.conn.execute(
+                "INSERT INTO app_settings(key, value) VALUES('schema_version', '2')"
+                " ON CONFLICT(key) DO UPDATE SET value = '2'"
+            )
+            self.conn.commit()
 
     # -- bootstrap ---------------------------------------------------------
 
@@ -881,6 +909,29 @@ class Store:
         )
         self.conn.commit()
 
+    def set_ignored(self, transaction_id: int, ignored: bool) -> None:
+        self.conn.execute(
+            "UPDATE transactions SET is_ignored = ? WHERE id = ?",
+            (1 if ignored else 0, transaction_id),
+        )
+        self.conn.commit()
+
+    def statements(self) -> list[sqlite3.Row]:
+        return list(
+            self.conn.execute(
+                "SELECT source_file, COUNT(*) AS rows, MIN(txn_date) AS first_day,"
+                " MAX(txn_date) AS last_day FROM transactions"
+                " GROUP BY source_file ORDER BY last_day DESC"
+            )
+        )
+
+    def delete_statement(self, source_file: str) -> int:
+        cursor = self.conn.execute(
+            "DELETE FROM transactions WHERE source_file = ?", (source_file,)
+        )
+        self.conn.commit()
+        return cursor.rowcount
+
     def delete_transaction(self, transaction_id: int) -> None:
         self.conn.execute("DELETE FROM transactions WHERE id = ?", (transaction_id,))
         self.conn.commit()
@@ -945,7 +996,8 @@ class Store:
     # -- maintenance -------------------------------------------------------
 
     def backup_now(self) -> Path:
-        backup_dir().mkdir(parents=True, exist_ok=True)
+        folder = self.path.parent / BACKUP_DIRNAME
+        folder.mkdir(parents=True, exist_ok=True)
         try:
             self.conn.commit()
         except sqlite3.Error:
@@ -955,18 +1007,18 @@ class Store:
         except sqlite3.Error:
             pass
         stamp = datetime.now().strftime("%Y-%m-%d_%H%M%S")
-        destination = backup_dir() / f"{self.path.stem}_{stamp}.db"
+        destination = folder / f"{self.path.stem}_{stamp}.db"
         target = sqlite3.connect(str(destination))
         try:
             self.conn.backup(target)
         finally:
             target.close()
-        self._prune_backups()
+        self._prune_backups(folder)
         return destination
 
-    def _prune_backups(self) -> None:
+    def _prune_backups(self, folder: Path) -> None:
         try:
-            files = sorted(backup_dir().glob("*.db"), key=lambda p: p.name, reverse=True)
+            files = sorted(folder.glob("*.db"), key=lambda p: p.name, reverse=True)
             for stale in files[BACKUP_KEEP:]:
                 stale.unlink(missing_ok=True)
         except OSError:
@@ -974,7 +1026,8 @@ class Store:
 
     def last_backup_time(self) -> datetime | None:
         try:
-            files = sorted(backup_dir().glob("*.db"), key=lambda p: p.name, reverse=True)
+            folder = self.path.parent / BACKUP_DIRNAME
+            files = sorted(folder.glob("*.db"), key=lambda p: p.name, reverse=True)
             if not files:
                 return None
             return datetime.fromtimestamp(files[0].stat().st_mtime)
@@ -1069,25 +1122,35 @@ def _header_matches(header: str, key: str) -> bool:
     )
 
 
-def _find_column(headers: Sequence[str], keys: Sequence[str]) -> int | None:
+def _find_column(
+    headers: Sequence[str], keys: Sequence[str], exclude: Iterable[int] = ()
+) -> int | None:
+    skip = set(exclude)
     for key in keys:
         for index, header in enumerate(headers):
+            if index in skip:
+                continue
             if header == key:
                 return index
     for key in keys:
         for index, header in enumerate(headers):
+            if index in skip:
+                continue
             if _header_matches(header, key):
                 return index
     return None
 
 
 def map_columns(headers: Sequence[Any]) -> dict[str, int]:
-    """Best-effort header mapping for date, amount, debit, credit and description."""
+    """Map date, debit, credit, description and direction headers.
+
+    Debit and credit are resolved first so that a generic "amount" match can
+    never claim the debit column. That mistake turns every payment positive.
+    """
     normalised = [normalise_header(h) for h in headers]
     mapping: dict[str, int] = {}
     for field, keys in (
         ("date", DATE_KEYS),
-        ("amount", AMOUNT_KEYS),
         ("debit", DEBIT_KEYS),
         ("credit", CREDIT_KEYS),
         ("description", DESC_KEYS),
@@ -1096,6 +1159,11 @@ def map_columns(headers: Sequence[Any]) -> dict[str, int]:
         index = _find_column(normalised, keys)
         if index is not None:
             mapping[field] = index
+
+    split_columns = [index for key, index in mapping.items() if key in ("debit", "credit")]
+    index = _find_column(normalised, AMOUNT_KEYS, exclude=split_columns)
+    if index is not None:
+        mapping["amount"] = index
     return mapping
 
 
@@ -1215,19 +1283,14 @@ def _table_to_rows(
             continue
 
         amount: float | None = None
-        if "amount" in mapping:
+        debit = parse_amount(_cell(raw, mapping["debit"])) if "debit" in mapping else None
+        credit = parse_amount(_cell(raw, mapping["credit"])) if "credit" in mapping else None
+        debit = abs(debit) if debit is not None else None
+        credit = abs(credit) if credit is not None else None
+        if debit or credit:
+            amount = (credit or 0.0) - (debit or 0.0)
+        elif "amount" in mapping:
             amount = parse_amount(_cell(raw, mapping["amount"]))
-        if amount is None and ("debit" in mapping or "credit" in mapping):
-            debit = parse_amount(_cell(raw, mapping["debit"])) if "debit" in mapping else None
-            credit = parse_amount(_cell(raw, mapping["credit"])) if "credit" in mapping else None
-            debit = abs(debit) if debit is not None else None
-            credit = abs(credit) if credit is not None else None
-            if debit and credit:
-                amount = credit - debit
-            elif debit:
-                amount = -debit
-            elif credit:
-                amount = credit
         if amount is None:
             skipped += 1
             continue
@@ -1280,16 +1343,55 @@ def _decode(raw: bytes) -> str:
     return raw.decode("utf-8", errors="replace")
 
 
+CSV_DELIMITERS = (",", ";", "\t", "|")
+
+
+def _detect_delimiter(text: str) -> str:
+    """Pick the delimiter that splits the header into the most columns.
+
+    The sniffer's quote character is deliberately ignored: bank exports often
+    start sort codes with an apostrophe, which makes it guess "'" as the quote
+    character and merge every record into the next one.
+    """
+    header = ""
+    for line in text.splitlines():
+        if line.strip():
+            header = line
+            break
+    try:
+        sniffed = csv.Sniffer().sniff(
+            text[:8000], delimiters="".join(CSV_DELIMITERS)
+        ).delimiter
+    except csv.Error:
+        sniffed = ","
+
+    counts: dict[str, int] = {}
+    for delimiter in CSV_DELIMITERS:
+        try:
+            counts[delimiter] = len(
+                next(csv.reader([header], delimiter=delimiter, quotechar='"'), [])
+            )
+        except csv.Error:
+            counts[delimiter] = 0
+    best = max(counts.values()) if counts else 0
+    if best < 3:
+        return sniffed
+    if counts.get(sniffed, 0) == best:
+        return sniffed
+    return max(counts, key=lambda key: counts[key])
+
+
 def parse_csv(path: Path) -> tuple[list[dict[str, Any]], dict[str, str], list[str]]:
     text = _decode(path.read_bytes())
     if not text.strip():
         raise ParseError("That file is empty.")
-    sample = text[:8000]
-    try:
-        dialect: Any = csv.Sniffer().sniff(sample, delimiters=",;\t|")
-    except csv.Error:
-        dialect = csv.excel
-    table = [row for row in csv.reader(io.StringIO(text), dialect)]
+    delimiter = _detect_delimiter(text)
+    table = [
+        row
+        for row in csv.reader(
+            io.StringIO(text), delimiter=delimiter, quotechar='"', doublequote=True
+        )
+    ]
     return _table_to_rows(table)
 
 
@@ -1528,8 +1630,14 @@ def prepare_import(
 
     prepared: list[PreparedRow] = []
     seen: set[str] = set()
+    occurrences: dict[str, int] = {}
     for row in parsed.rows:
-        digest = transaction_hash(row["day"], row["amount"], row["description"])
+        base = transaction_hash(row["day"], row["amount"], row["description"])
+        count = occurrences.get(base, 0)
+        occurrences[base] = count + 1
+        digest = transaction_hash(
+            row["day"], row["amount"], row["description"], sequence=count
+        )
         duplicate = digest in known or digest in seen
         seen.add(digest)
         category_id = match_category(row["description"], rules)
@@ -1644,6 +1752,7 @@ class CycleSummary:
     payments: int = 0
     flagged_count: int = 0
     transfers: int = 0
+    ignored: int = 0
 
     @property
     def net(self) -> float:
@@ -1658,6 +1767,9 @@ def summarise(rows: Sequence[sqlite3.Row], start: date, end: date) -> CycleSumma
     summary = CycleSummary(start=start, end=end)
     for row in rows:
         amount = float(row["amount"])
+        if int(row["is_ignored"]):
+            summary.ignored += 1
+            continue
         if int(row["is_transfer"]):
             summary.transfers += 1
             continue
@@ -1679,7 +1791,7 @@ def category_totals(
     totals: dict[str, float] = {}
     for row in rows:
         amount = float(row["amount"])
-        if amount >= 0 or int(row["is_transfer"]):
+        if amount >= 0 or int(row["is_transfer"]) or int(row["is_ignored"]):
             continue
         name = names.get(int(row["category_id"] or 0), UNCATEGORISED)
         totals[name] = totals.get(name, 0.0) - amount
@@ -1690,7 +1802,9 @@ def flagged_breakdown(rows: Sequence[sqlite3.Row]) -> list[dict[str, Any]]:
     grouped: dict[str, dict[str, Any]] = {}
     for row in rows:
         amount = float(row["amount"])
-        if amount >= 0 or int(row["is_transfer"]) or not int(row["is_saving"]):
+        if amount >= 0 or int(row["is_transfer"]) or int(row["is_ignored"]):
+            continue
+        if not int(row["is_saving"]):
             continue
         key = str(row["description"])
         entry = grouped.setdefault(key, {"description": key, "total": 0.0, "count": 0})
@@ -2629,7 +2743,7 @@ class TransactionsPage(Page):
         self._rows: list[sqlite3.Row] = []
         self._by_id: dict[int, sqlite3.Row] = {}
         self._search_job: str | None = None
-        self._editor: Any = None
+        self.range_hint = "this cycle"
 
         self.grid_columnconfigure(0, weight=1)
         self.grid_rowconfigure(1, weight=1)
@@ -2640,7 +2754,7 @@ class TransactionsPage(Page):
 
         self.filter = ctk.CTkSegmentedButton(
             toolbar,
-            values=["All", "Expenses", "Income", "Flagged", "Transfers"],
+            values=["All", "Expenses", "Income", "Flagged", "Transfers", "Ignored"],
             font=font(10),
             height=32,
             corner_radius=8,
@@ -2659,7 +2773,7 @@ class TransactionsPage(Page):
         self.search = ctk.CTkEntry(
             toolbar,
             placeholder_text="Search description or category",
-            width=260,
+            width=240,
             height=32,
             corner_radius=8,
             border_width=1,
@@ -2672,10 +2786,23 @@ class TransactionsPage(Page):
         self.search.grid(row=0, column=1, sticky="e", padx=(12, 12))
         self.search.bind("<KeyRelease>", self._on_search)
 
+        self.all_time = ctk.CTkSwitch(
+            toolbar,
+            text="All time",
+            font=font(10),
+            text_color=Palette.MUTED,
+            progress_color=Palette.ACCENT,
+            button_color=Palette.SURFACE,
+            button_hover_color=Palette.RAISED,
+            fg_color=Palette.BORDER,
+            command=self.refresh,
+        )
+        self.all_time.grid(row=0, column=2, sticky="e", padx=(0, 14))
+
         self.count_label = ctk.CTkLabel(
             toolbar, text="", font=font(9), text_color=Palette.MUTED, anchor="e"
         )
-        self.count_label.grid(row=0, column=2, sticky="e")
+        self.count_label.grid(row=0, column=3, sticky="e")
 
         self.shell = ctk.CTkFrame(
             self, fg_color=Palette.SURFACE, corner_radius=12,
@@ -2713,7 +2840,12 @@ class TransactionsPage(Page):
     # -- data --------------------------------------------------------------
 
     def refresh(self) -> None:
-        start, end = self.app.cycle()
+        if self.all_time.get():
+            start, end = date(1900, 1, 1), date(2100, 1, 1)
+            self.range_hint = "all time"
+        else:
+            start, end = self.app.cycle()
+            self.range_hint = format_range(start, end)
         self._rows = self.store.transactions_between(start, end)
         self._by_id = {int(row["id"]): row for row in self._rows}
         self._render()
@@ -2724,7 +2856,6 @@ class TransactionsPage(Page):
         self._search_job = self.after(220, self._render)
 
     def _render(self) -> None:
-        self._dismiss_editor()
         query = self.search.get().strip().lower()
         mode = self.filter.get()
         names = self.app.category_map()
@@ -2741,6 +2872,8 @@ class TransactionsPage(Page):
                 continue
             if mode == "Transfers" and not transfer:
                 continue
+            if mode == "Ignored" and not int(row["is_ignored"]):
+                continue
             if query:
                 haystack = (
                     f"{row['description']} {names.get(int(row['category_id'] or 0), '')}"
@@ -2754,8 +2887,9 @@ class TransactionsPage(Page):
         for index, row in enumerate(shown):
             base = "even" if index % 2 else "odd"
             transfer = bool(int(row["is_transfer"]))
+            ignored = bool(int(row["is_ignored"]))
             amount = float(row["amount"])
-            if transfer:
+            if ignored or transfer:
                 tag = f"{base}_transfer"
             elif int(row["is_saving"]):
                 tag = f"{base}_flag"
@@ -2763,6 +2897,7 @@ class TransactionsPage(Page):
                 tag = f"{base}_income"
             else:
                 tag = base
+            status = "Ignored" if ignored else ("Flagged" if int(row["is_saving"]) else "")
             self.tree.insert(
                 "",
                 "end",
@@ -2772,38 +2907,34 @@ class TransactionsPage(Page):
                     str(row["description"])[:120],
                     names.get(int(row["category_id"] or 0), UNCATEGORISED),
                     money(amount, signed=True),
-                    "Flagged" if int(row["is_saving"]) else "",
+                    status,
                 ),
                 tags=(tag,),
             )
 
-        income = sum(float(r["amount"]) for r in visible
-                     if float(r["amount"]) > 0 and not int(r["is_transfer"]))
-        spend = sum(-float(r["amount"]) for r in visible
-                    if float(r["amount"]) < 0 and not int(r["is_transfer"]))
+        counted = [
+            r for r in visible
+            if not int(r["is_transfer"]) and not int(r["is_ignored"])
+        ]
+        income = sum(float(r["amount"]) for r in counted if float(r["amount"]) > 0)
+        spend = sum(-float(r["amount"]) for r in counted if float(r["amount"]) < 0)
+        ignored_count = sum(1 for r in visible if int(r["is_ignored"]))
         summary = (
             f"{len(visible)} transaction{'s' if len(visible) != 1 else ''}"
             f"   \u00b7   {money(spend)} out   \u00b7   {money(income)} in"
         )
+        if ignored_count:
+            summary += f"   \u00b7   {ignored_count} ignored"
         if len(visible) > PAGE_LIMIT:
             summary += f"   \u00b7   showing the most recent {PAGE_LIMIT}"
         self.footer.configure(text=summary)
         self.count_label.configure(
-            text=f"{self.app.store.path.name}  \u00b7  {len(self._rows)} in cycle"
+            text=f"{self.app.store.path.name}  \u00b7  {len(self._rows)} in {self.range_hint}"
         )
 
     # -- interaction -------------------------------------------------------
 
-    def _dismiss_editor(self) -> None:
-        if self._editor is not None:
-            try:
-                self._editor.destroy()
-            except Exception:
-                pass
-            self._editor = None
-
     def _on_click(self, event: Any) -> None:
-        self._dismiss_editor()
         if self.tree.identify_region(event.x, event.y) != "cell":
             return
         item = self.tree.identify_row(event.y)
@@ -2811,48 +2942,48 @@ class TransactionsPage(Page):
             return
         column = self.tree.identify_column(event.x)
         if column == "#3":
-            self._open_category_editor(item)
+            self._edit_row(int(item))
         elif column == "#5":
             self._toggle_flag(int(item))
 
-    def _open_category_editor(self, item: str) -> None:
-        box = self.tree.bbox(item, "#3")
-        if not box:
-            return
-        x, y, width, height = box
-        origin_x = self.tree.winfo_rootx() - self.winfo_rootx()
-        origin_y = self.tree.winfo_rooty() - self.winfo_rooty()
-        menu = ctk.CTkOptionMenu(
-            self,
-            values=self.app.category_names(),
-            width=max(width, 190),
-            height=max(height - 2, 26),
-            corner_radius=4,
-            fg_color=Palette.RAISED,
-            button_color=Palette.RAISED,
-            button_hover_color=Palette.BORDER,
-            dropdown_fg_color=Palette.RAISED,
-            dropdown_hover_color=Palette.BORDER,
-            dropdown_text_color=Palette.TEXT,
-            text_color=Palette.TEXT,
-            font=font(9),
-            dropdown_font=font(9),
-            command=lambda value: self._category_chosen(int(item), value),
-        )
-        menu.set(str(self.tree.set(item, "category")))
-        menu.place(x=origin_x + x, y=origin_y + y)
-        self._editor = menu
-        self.after(60, menu.focus_set)
-        menu.bind("<Escape>", lambda _event: self._dismiss_editor())
-
-    def _category_chosen(self, transaction_id: int, category: str) -> None:
-        self._dismiss_editor()
+    def _edit_row(self, transaction_id: int) -> None:
         row = self._by_id.get(transaction_id)
         if row is None:
             return
-        current = self.app.category_map().get(int(row["category_id"] or 0), UNCATEGORISED)
-        if category == current:
+        names = self.app.category_map()
+        current = names.get(int(row["category_id"] or 0), UNCATEGORISED)
+        dialog = CategoryDialog(
+            self,
+            description=str(row["description"]),
+            amount=float(row["amount"]),
+            categories=self.app.category_names(),
+            current=current,
+            ignored=bool(int(row["is_ignored"])),
+        )
+        self.app.wait_window(dialog)
+        result = dialog.result
+        if result is None:
             return
+
+        category, new_category, ignored = result
+        changed = False
+        if ignored != bool(int(row["is_ignored"])):
+            self.store.set_ignored(transaction_id, ignored)
+            changed = True
+        if new_category:
+            self.store.ensure_category(new_category)
+            category = new_category
+        if category and category != current:
+            self._apply_category_change(transaction_id, row, current, category)
+            changed = True
+        self.refresh()
+        self.app.invalidate("dashboard", "plan", "insights")
+        if changed:
+            self.app.notify("Transaction updated.", Palette.ACCENT)
+
+    def _apply_category_change(
+        self, transaction_id: int, row: sqlite3.Row, current: str, category: str
+    ) -> None:
         dialog = RuleDialog(self, str(row["description"]), current, category)
         self.app.wait_window(dialog)
         if dialog.result is None:
@@ -2867,8 +2998,6 @@ class TransactionsPage(Page):
         else:
             changed = self.store.apply_keyword(keyword, category_id)
             self.store.add_rule(keyword, "contains", category_id)
-        self.refresh()
-        self.app.invalidate("dashboard", "plan", "insights")
         self.app.notify(
             f"{changed} transaction{'s' if changed != 1 else ''} moved to {category}.",
             Palette.ACCENT,
@@ -3096,6 +3225,8 @@ class ImportDialog(ctk.CTkToplevel):
             parts.append(f"{duplicates} already imported")
         if len(self.sources) > 1:
             parts.append(f"{len(self.sources)} files")
+        if len(self.prepared) > 400:
+            parts.append(f"previewing the first 400 of {len(self.prepared)}")
         self.summary_label.configure(text="   \u00b7   ".join(parts))
         self.confirm_button.configure(
             text=f"Add {fresh} transaction{'s' if fresh != 1 else ''}",
@@ -3106,6 +3237,248 @@ class ImportDialog(ctk.CTkToplevel):
         self.prepared = prepare_batch(self.store, self._batch())
         self.result = commit_import(self.store, self.prepared)
         self.committed = True
+        self.destroy()
+
+
+class CategoryDialog(ctk.CTkToplevel):
+    """Pick a category, create one, or ignore the transaction entirely."""
+
+    def __init__(
+        self,
+        master: Any,
+        description: str,
+        amount: float,
+        categories: Sequence[str],
+        current: str,
+        ignored: bool,
+    ) -> None:
+        super().__init__(master)
+        self.categories = [name for name in categories if name != UNCATEGORISED]
+        self.selected = current
+        self.new_category: str | None = None
+        self.result: tuple[str | None, str | None, bool] | None = None
+
+        self.title("Change category")
+        self.geometry("560x640")
+        self.minsize(480, 520)
+        self.configure(fg_color=Palette.BG)
+        self.transient(master)
+        self._build(description, amount, current, ignored)
+        self.after(100, self._grab)
+
+    def _grab(self) -> None:
+        try:
+            self.grab_set()
+            self.lift()
+            self.focus_force()
+        except tk.TclError:
+            pass
+
+    def _build(
+        self, description: str, amount: float, current: str, ignored: bool
+    ) -> None:
+        self.grid_columnconfigure(0, weight=1)
+        self.grid_rowconfigure(3, weight=1)
+
+        head = ctk.CTkFrame(self, fg_color="transparent")
+        head.grid(row=0, column=0, sticky="ew", padx=24, pady=(22, 0))
+        head.grid_columnconfigure(0, weight=1)
+        ctk.CTkLabel(
+            head, text=description[:60], font=font(13, "bold"),
+            text_color=Palette.TEXT, anchor="w",
+        ).grid(row=0, column=0, sticky="w")
+        ctk.CTkLabel(
+            head, text=money(amount, signed=True), font=mono(11),
+            text_color=Palette.RED if amount < 0 else Palette.ACCENT, anchor="e",
+        ).grid(row=0, column=1, sticky="e")
+
+        self.search = ctk.CTkEntry(
+            self, placeholder_text="Search categories",
+            height=34, corner_radius=8, border_width=1,
+            fg_color=Palette.SURFACE, border_color=Palette.BORDER,
+            text_color=Palette.TEXT, placeholder_text_color=Palette.FAINT, font=font(10),
+        )
+        self.search.grid(row=1, column=0, sticky="ew", padx=24, pady=(12, 8))
+        self.search.bind("<KeyRelease>", lambda _event: self._fill(self.search.get()))
+
+        self.list = ctk.CTkScrollableFrame(
+            self, fg_color=Palette.SURFACE, corner_radius=10,
+            border_width=1, border_color=Palette.BORDER,
+            scrollbar_button_color=Palette.SCROLL,
+            scrollbar_button_hover_color=Palette.SCROLL_HOVER,
+        )
+        self.list.grid(row=2, column=0, rowspan=2, sticky="nsew", padx=24)
+        self.list.grid_columnconfigure(0, weight=1)
+
+        self._fill("", current)
+
+        bottom = ctk.CTkFrame(self, fg_color="transparent")
+        bottom.grid(row=4, column=0, sticky="ew", padx=24, pady=(10, 20))
+        bottom.grid_columnconfigure(0, weight=1)
+
+        self.ignore = ctk.CTkCheckBox(
+            bottom,
+            text="Ignore this transaction — leave it out of every figure",
+            font=font(10),
+            text_color=Palette.MUTED,
+            fg_color=Palette.ACCENT,
+            hover_color=Palette.ACCENT_HOVER,
+            border_color=Palette.FAINT,
+            checkbox_width=18,
+            checkbox_height=18,
+        )
+        self.ignore.grid(row=0, column=0, columnspan=3, sticky="w", pady=(0, 10))
+        if ignored:
+            self.ignore.select()
+
+        ctk.CTkButton(
+            bottom, text="Cancel", width=96, height=36, corner_radius=8,
+            fg_color="transparent", hover_color=Palette.RAISED, border_width=1,
+            border_color=Palette.BORDER, text_color=Palette.MUTED, font=font(10),
+            command=self.destroy,
+        ).grid(row=1, column=1, padx=(0, 10))
+        ctk.CTkButton(
+            bottom, text="Apply", width=110, height=36, corner_radius=8,
+            fg_color=Palette.ACCENT, hover_color=Palette.ACCENT_HOVER,
+            text_color="#FFFFFF", font=font(10, "bold"), command=self._apply,
+        ).grid(row=1, column=2)
+
+        self.bind("<Escape>", lambda _event: self.destroy())
+
+    def _fill(self, query: str, current: str | None = None) -> None:
+        for child in self.list.winfo_children():
+            child.destroy()
+        needle = query.strip().lower()
+        shown = [name for name in self.categories if needle in name.lower()]
+        row = 0
+        for name in shown:
+            chosen = name == self.selected
+            button = ctk.CTkButton(
+                self.list,
+                text=name,
+                anchor="w",
+                height=32,
+                corner_radius=6,
+                fg_color=Palette.RAISED if chosen else "transparent",
+                hover_color=Palette.RAISED,
+                text_color=Palette.TEXT if chosen else Palette.MUTED,
+                font=font(10, "bold" if chosen else "normal"),
+                command=lambda value=name: self._select(value),
+            )
+            button.grid(row=row, column=0, sticky="ew", padx=4, pady=1)
+            row += 1
+
+        create = ctk.CTkButton(
+            self.list,
+            text="+  Create new category",
+            anchor="w",
+            height=32,
+            corner_radius=6,
+            fg_color="transparent",
+            hover_color=Palette.RAISED,
+            text_color=Palette.ACCENT,
+            font=font(10),
+            command=self._show_create,
+        )
+        create.grid(row=row, column=0, sticky="ew", padx=4, pady=(6, 2))
+        row += 1
+
+        self.create_box = ctk.CTkFrame(self.list, fg_color="transparent")
+        self.create_box.grid(row=row, column=0, sticky="ew", padx=4, pady=(0, 6))
+        self.create_box.grid_columnconfigure(0, weight=1)
+        self.new_entry = ctk.CTkEntry(
+            self.create_box, placeholder_text="New category name",
+            height=32, corner_radius=6, border_width=1,
+            fg_color=Palette.BG, border_color=Palette.BORDER,
+            text_color=Palette.TEXT, placeholder_text_color=Palette.FAINT, font=font(10),
+        )
+        self.new_entry.grid(row=0, column=0, sticky="ew", padx=(0, 8))
+        ctk.CTkButton(
+            self.create_box, text="Add", width=64, height=32, corner_radius=6,
+            fg_color=Palette.RAISED, hover_color=Palette.BORDER,
+            text_color=Palette.TEXT, font=font(10), command=self._create,
+        ).grid(row=0, column=1)
+        self.create_box.grid_remove()
+
+    def _show_create(self) -> None:
+        self.create_box.grid()
+        self.new_entry.focus_set()
+
+    def _create(self) -> None:
+        name = self.new_entry.get().strip()
+        if not name:
+            return
+        self.new_category = name
+        if name not in self.categories:
+            self.categories.append(name)
+        self.selected = name
+        self.search.delete(0, "end")
+        self._fill("")
+
+    def _select(self, name: str) -> None:
+        self.selected = name
+        self.new_category = None
+        self._fill(self.search.get())
+
+    def _apply(self) -> None:
+        typed = ""
+        try:
+            if self.create_box.winfo_manager():
+                typed = self.new_entry.get().strip()
+        except tk.TclError:
+            typed = ""
+        category = typed or self.selected
+        self.result = (category, typed or None, bool(self.ignore.get()))
+        self.destroy()
+
+
+class ConfirmDialog(ctk.CTkToplevel):
+    """Yes/no confirmation."""
+
+    def __init__(
+        self, master: Any, title: str, message: str, confirm: str = "Remove"
+    ) -> None:
+        super().__init__(master)
+        self.result = False
+        self.title(title)
+        self.geometry("520x260")
+        self.resizable(False, False)
+        self.configure(fg_color=Palette.BG)
+        self.transient(master)
+        self.grid_columnconfigure(0, weight=1)
+        ctk.CTkLabel(
+            self, text=title, font=font(15, "bold"), text_color=Palette.TEXT, anchor="w",
+        ).grid(row=0, column=0, sticky="w", padx=26, pady=(24, 6))
+        ctk.CTkLabel(
+            self, text=message, font=font(10), text_color=Palette.MUTED,
+            anchor="w", justify="left", wraplength=450,
+        ).grid(row=1, column=0, sticky="w", padx=26)
+        buttons = ctk.CTkFrame(self, fg_color="transparent")
+        buttons.grid(row=2, column=0, sticky="e", padx=26, pady=(20, 22))
+        ctk.CTkButton(
+            buttons, text="Cancel", width=96, height=34, corner_radius=8,
+            fg_color="transparent", hover_color=Palette.RAISED, border_width=1,
+            border_color=Palette.BORDER, text_color=Palette.MUTED, font=font(10),
+            command=self.destroy,
+        ).grid(row=0, column=0, padx=(0, 10))
+        ctk.CTkButton(
+            buttons, text=confirm, width=120, height=34, corner_radius=8,
+            fg_color=Palette.RED, hover_color="#9C3626",
+            text_color="#FFFFFF", font=font(10, "bold"), command=self._yes,
+        ).grid(row=0, column=1)
+        self.after(100, self._grab)
+        self.bind("<Escape>", lambda _event: self.destroy())
+
+    def _grab(self) -> None:
+        try:
+            self.grab_set()
+            self.lift()
+            self.focus_force()
+        except tk.TclError:
+            pass
+
+    def _yes(self) -> None:
+        self.result = True
         self.destroy()
 
 
@@ -4248,7 +4621,7 @@ def period_records(
 ) -> list[dict[str, Any]]:
     records: list[dict[str, Any]] = []
     for row in store.transactions_between(start, end):
-        if int(row["is_transfer"]):
+        if int(row["is_transfer"]) or int(row["is_ignored"]):
             continue
         records.append(
             {
@@ -5044,7 +5417,21 @@ class SettingsPage(Page):
         )
         self.release_url = RELEASES_PAGE
 
+        # Imported statements -------------------------------------------
+        card = self._card(
+            right,
+            "Imported statements",
+            "Removing one deletes exactly the rows that file brought in. "
+            "Everything else stays.",
+        )
+        self.statement_list = ctk.CTkFrame(card, fg_color="transparent")
+        self.statement_list.grid(
+            row=2, column=0, columnspan=3, sticky="ew", padx=20, pady=(12, 16)
+        )
+        self.statement_list.grid_columnconfigure(0, weight=1)
+
         self._load_categories()
+        self._load_statements()
         self.refresh()
 
     def _card(self, parent: Any, title: str, subtitle: str) -> ctk.CTkFrame:
@@ -5064,6 +5451,8 @@ class SettingsPage(Page):
         return card
 
     def refresh(self) -> None:
+        if hasattr(self, "statement_list"):
+            self._load_statements()
         start, end = self.cycle_note()
         anchor = self.app.cycle_anchor
         note = f"Statements run {format_range(start, end)}."
@@ -5201,6 +5590,60 @@ class SettingsPage(Page):
         self.app.refresh_all()
         self.app.notify(f"Category {name} added.", Palette.ACCENT)
 
+    def _load_statements(self) -> None:
+        for child in self.statement_list.winfo_children():
+            child.destroy()
+        rows = self.store.statements()
+        if not rows:
+            ctk.CTkLabel(
+                self.statement_list, text="Nothing imported yet.",
+                font=font(9), text_color=Palette.FAINT, anchor="w",
+            ).grid(row=0, column=0, sticky="w")
+            return
+        for index, row in enumerate(rows):
+            name = str(row["source_file"])
+            box = ctk.CTkFrame(self.statement_list, fg_color="transparent")
+            box.grid(row=index, column=0, sticky="ew", pady=2)
+            box.grid_columnconfigure(0, weight=1)
+            ctk.CTkLabel(
+                box, text=name[:36] or "manual entry", font=font(9),
+                text_color=Palette.TEXT, anchor="w",
+            ).grid(row=0, column=0, sticky="w")
+            first_day = str(row["first_day"] or "")[:10]
+            last_day = str(row["last_day"] or "")[:10]
+            ctk.CTkLabel(
+                box,
+                text=f"{row['rows']} rows  \u00b7  {first_day} to {last_day}",
+                font=font(8), text_color=Palette.FAINT, anchor="w",
+            ).grid(row=1, column=0, sticky="w")
+            ctk.CTkButton(
+                box, text="Remove", width=78, height=28, corner_radius=6,
+                fg_color="transparent", hover_color=Palette.RAISED, border_width=1,
+                border_color=Palette.BORDER, text_color=Palette.MUTED, font=font(9),
+                command=lambda value=name: self._remove_statement(value),
+            ).grid(row=0, column=1, rowspan=2, sticky="e", padx=(10, 0))
+
+    def _remove_statement(self, source_file: str) -> None:
+        count = 0
+        for row in self.store.statements():
+            if str(row["source_file"]) == source_file:
+                count = int(row["rows"])
+                break
+        dialog = ConfirmDialog(
+            self.app,
+            "Remove this statement?",
+            f"{source_file}\n\nThis deletes its {count} transactions from the ledger. "
+            "Categories, rules, settings and your other statements are untouched. "
+            "Backups already taken are not affected.",
+        )
+        self.app.wait_window(dialog)
+        if not dialog.result:
+            return
+        removed = self.store.delete_statement(source_file)
+        self._load_statements()
+        self.app.refresh_all()
+        self.app.notify(f"{removed} transactions removed.", Palette.ACCENT)
+
     def _save_key(self) -> None:
         value = self.key_entry.get().strip()
         if not value:
@@ -5234,7 +5677,7 @@ class SettingsPage(Page):
         self.app.notify(f"Backup written to {destination.name}.", Palette.ACCENT)
 
     def _open_backups(self) -> None:
-        folder = backup_dir()
+        folder = self.store.path.parent / BACKUP_DIRNAME
         folder.mkdir(parents=True, exist_ok=True)
         try:
             if sys.platform == "win32":
