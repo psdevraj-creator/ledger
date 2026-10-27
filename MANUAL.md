@@ -87,7 +87,8 @@ shows three futures: doing nothing, cutting flagged spending in half, cutting it
 **Insights** — three findings worked out on your computer, plus a written review. See
 [section 8](#8-insights-local-model-cloud-model-and-what-gets-sent).
 
-**Settings** — billing cycle, categories, rules, API key, local model, data and backups.
+**Settings** — billing cycle, categories, rules, API key, local model, data, backups and
+the version with a **Check for updates** button.
 
 The arrows either side of the date range at the top move you between cycles. Everything on
 screen follows that range.
@@ -542,6 +543,9 @@ folder — every crash is written there with a timestamp.
   and you can refuse permanently.
 - **The API key is encrypted** with your Windows user account, using the same protection
   Windows uses for saved passwords.
+- **The update check only runs when you press it.** Settings → Check for updates asks
+  GitHub for the latest release number. Nothing else is sent, and it never runs on
+  startup.
 - **What is never sent:** account numbers, transaction descriptions beyond the flagged
   items you chose, balances, or the database file itself.
 

@@ -43,8 +43,8 @@ def main() -> int:
           [t.get_text() for t in trend_axes.get_xticklabels()])
     split_axes = dashboard.split.figure.axes[0]
     check("category bars drawn", len(split_axes.patches) >= 3, len(split_axes.patches))
-    check("recent list", len(dashboard.recent_list.winfo_children()) >= 3,
-          len(dashboard.recent_list.winfo_children()))
+    check("recent list", dashboard.recent_rows[0][0].cget("text") != "",
+          dashboard.recent_rows[0][0].cget("text"))
 
     ledger_page = app.pages["ledger"]
     app.show_page("ledger")
@@ -107,6 +107,10 @@ def main() -> int:
           settings.cloud_switch.get())
     check("local status text", settings.local_status.cget("text") != "",
           settings.local_status.cget("text"))
+    check("version label", L.APP_VERSION in settings.version_label.cget("text"),
+          settings.version_label.cget("text"))
+    check("update button ready", settings.update_button.cget("state") == "normal",
+          settings.update_button.cget("state"))
     check("database path shown", str(store.path) in settings.data_status.cget("text")
           or store.path.name in settings.data_status.cget("text")
           or settings.data_status.cget("text") != "",
@@ -165,6 +169,7 @@ def main() -> int:
     try:
         from PIL import ImageGrab
 
+        app.attributes("-topmost", True)
         app.lift()
         app.update()
         left, top = app.winfo_rootx(), app.winfo_rooty()
@@ -172,6 +177,7 @@ def main() -> int:
         shot = ImageGrab.grab(
             bbox=(left, top, left + app.winfo_width(), bottom)
         ).convert("RGB")
+        app.attributes("-topmost", False)
         pixels = list(shot.getdata())
         total = max(len(pixels), 1)
         light = sum(1 for r, g, b in pixels if (r + g + b) / 3 > 200) / total

@@ -737,5 +737,74 @@ else:
     check("instruction is carried through", embedded.startswith("INSTRUCTION"), embedded[:20])
 
 # ---------------------------------------------------------------------------
+# 13. Update check
+# ---------------------------------------------------------------------------
+
+print("update check")
+equal("parse plain version", L.parse_version("1.2.3"), (1, 2, 3))
+equal("parse tagged version", L.parse_version("v1.2.3"), (1, 2, 3))
+equal("parse partial version", L.parse_version("2.0"), (2, 0))
+equal("parse nonsense", L.parse_version("release"), (0,))
+check("patch bump is newer", L.is_newer("1.1.1", "1.1.0"))
+check("minor bump beats patch", L.is_newer("1.2.0", "1.1.9"))
+check("major bump", L.is_newer("2.0.0", "1.9.9"))
+check("same version is not newer", not L.is_newer("1.1.0", "1.1.0"))
+check("older version is not newer", not L.is_newer("1.0.9", "1.1.0"))
+
+release = L.interpret_release(
+    {"tag_name": "v9.9.9", "html_url": "https://example.invalid/rel", "body": "notes"},
+    "1.1.0",
+)
+check("newer release reported", release.available)
+equal("release version stripped of tag", release.latest, "9.9.9")
+equal("release url kept", release.url, "https://example.invalid/rel")
+
+current_release = L.interpret_release({"tag_name": "v1.1.0"}, "1.1.0")
+check("current release not flagged", not current_release.available)
+empty_release = L.interpret_release({}, "1.1.0")
+check("empty payload is safe", empty_release.latest == "1.1.0" and not empty_release.available)
+
+
+class _ReleaseHandler(http.server.BaseHTTPRequestHandler):
+    def do_GET(self) -> None:  # noqa: N802 - stdlib naming
+        if self.path == "/latest":
+            body = json.dumps(
+                {"tag_name": "v9.9.9", "html_url": "https://example.invalid/rel", "body": "x"}
+            ).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+        elif self.path == "/missing":
+            self.send_response(404)
+            self.end_headers()
+        elif self.path == "/limited":
+            self.send_response(403)
+            self.end_headers()
+
+    def log_message(self, *_args: object) -> None:
+        return
+
+
+release_server = http.server.HTTPServer(("127.0.0.1", 0), _ReleaseHandler)
+release_thread = threading.Thread(target=release_server.serve_forever, daemon=True)
+release_thread.start()
+try:
+    base = f"http://127.0.0.1:{release_server.server_address[1]}"
+    found = L.check_for_update(current="1.1.0", endpoint=f"{base}/latest")
+    check("http check finds the release", found.available, found.latest)
+    equal("http check reads the tag", found.latest, "9.9.9")
+
+    for path, expected in (("/missing", "no releases"), ("/limited", "limiting")):
+        try:
+            L.check_for_update(current="1.1.0", endpoint=f"{base}{path}")
+            check(f"{path} raises", False, "no error")
+        except RuntimeError as error:
+            check(f"{path} explains itself", expected in str(error).lower(), str(error))
+finally:
+    release_server.shutdown()
+
+# ---------------------------------------------------------------------------
 print(f"\n{PASS} passed, {FAIL} failed")
 raise SystemExit(1 if FAIL else 0)

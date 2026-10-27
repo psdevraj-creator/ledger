@@ -11,7 +11,7 @@
   <Package
       Name="Ledger"
       Manufacturer="Dev Srinivasan"
-      Version="1.0.0"
+      Version="$(var.Version)"
       UpgradeCode="e58414a9-0502-49e1-8284-5b467cdb5ade"
       Scope="perUser"
       Compressed="yes"
@@ -20,6 +20,9 @@
     <SummaryInformation
         Description="Ledger - personal finance for Windows"
         Manufacturer="Dev Srinivasan" />
+
+    <Icon Id="AppIcon" SourceFile="assets\ledger.ico" />
+    <Property Id="ARPPRODUCTICON" Value="AppIcon" />
 
     <MajorUpgrade DowngradeErrorMessage="A newer version of Ledger is already installed." />
     <MediaTemplate EmbedCab="yes" CompressionLevel="medium" />
@@ -50,11 +53,13 @@
                   Directory="AppMenuFolder"
                   Name="Ledger"
                   WorkingDirectory="INSTALLFOLDER"
+                  Icon="AppIcon"
                   Advertise="no" />
         <Shortcut Id="DesktopShortcut"
                   Directory="DesktopFolder"
                   Name="Ledger"
                   WorkingDirectory="INSTALLFOLDER"
+                  Icon="AppIcon"
                   Advertise="no" />
       </File>
 

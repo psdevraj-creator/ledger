@@ -27,6 +27,7 @@ import threading
 import time
 import tkinter as tk
 import traceback
+import webbrowser
 from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass
 from dataclasses import field as dc_field
@@ -43,6 +44,10 @@ from matplotlib.figure import Figure
 matplotlib.use("TkAgg", force=True)
 
 APP_NAME = "Ledger"
+APP_VERSION = "1.1.0"
+GITHUB_REPO = "psdevraj-creator/ledger"
+RELEASES_API = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
+RELEASES_PAGE = f"https://github.com/{GITHUB_REPO}/releases"
 DB_FILENAME = "budget_data.db"
 BACKUP_DIRNAME = ".backups"
 BACKUP_KEEP = 30
@@ -96,12 +101,30 @@ SERIES = (
 )
 
 
+_SCALE = {
+    8: 10,
+    9: 11,
+    10: 12,
+    11: 13,
+    12: 14,
+    14: 16,
+    15: 17,
+    16: 18,
+    17: 19,
+    18: 20,
+    22: 24,
+    26: 28,
+    27: 30,
+}
+
+
 def font(size: int = 11, weight: str = "normal") -> tuple[str, int, str]:
-    return ("Segoe UI", size, weight)
+    """Type scale: sizes are authored small and rendered one or two steps larger."""
+    return ("Segoe UI", _SCALE.get(size, size), weight)
 
 
 def mono(size: int = 10) -> tuple[str, int, str]:
-    return ("Consolas", size, "normal")
+    return ("Consolas", _SCALE.get(size, size), "normal")
 
 
 # ---------------------------------------------------------------------------
@@ -122,6 +145,76 @@ def database_path() -> Path:
 
 def backup_dir() -> Path:
     return app_dir() / BACKUP_DIRNAME
+
+
+def resource_path(relative: str) -> Path:
+    """Locate a bundled asset whether running from source or frozen."""
+    bundle = getattr(sys, "_MEIPASS", None)
+    base = Path(bundle) if bundle else app_dir()
+    return base / relative
+
+
+# ---------------------------------------------------------------------------
+# Update check
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class UpdateInfo:
+    latest: str
+    available: bool
+    url: str
+    notes: str = ""
+
+
+def parse_version(text: str) -> tuple[int, ...]:
+    """Turn 'v1.2.3' or '1.2' into a comparable tuple."""
+    numbers = re.findall(r"\d+", str(text))
+    if not numbers:
+        return (0,)
+    return tuple(int(part) for part in numbers[:3])
+
+
+def is_newer(candidate: str, current: str) -> bool:
+    return parse_version(candidate) > parse_version(current)
+
+
+def interpret_release(payload: dict[str, Any], current: str) -> UpdateInfo:
+    """Read a GitHub release payload without trusting its shape."""
+    tag = str(payload.get("tag_name") or "").strip().lstrip("vV")
+    url = str(payload.get("html_url") or RELEASES_PAGE)
+    notes = str(payload.get("body") or "").strip()[:600]
+    available = bool(tag) and is_newer(tag, current)
+    return UpdateInfo(
+        latest=tag or current,
+        available=available,
+        url=url,
+        notes=notes,
+    )
+
+
+def check_for_update(
+    current: str = APP_VERSION,
+    endpoint: str = RELEASES_API,
+    timeout: float = 6.0,
+) -> UpdateInfo:
+    """Ask GitHub for the newest published release."""
+    import requests
+
+    response = requests.get(
+        endpoint,
+        timeout=timeout,
+        headers={
+            "Accept": "application/vnd.github+json",
+            "User-Agent": f"{APP_NAME}/{current}",
+        },
+    )
+    if response.status_code == 404:
+        raise RuntimeError("No releases have been published yet.")
+    if response.status_code == 403:
+        raise RuntimeError("GitHub is limiting update checks. Try again later.")
+    response.raise_for_status()
+    return interpret_release(response.json(), current)
 
 
 # ---------------------------------------------------------------------------
@@ -1730,7 +1823,13 @@ class StatCard(ctk.CTkFrame):
 
 
 class ChartPanel(ctk.CTkFrame):
-    def __init__(self, master: Any, title: str, subtitle: str = "") -> None:
+    def __init__(
+        self,
+        master: Any,
+        title: str,
+        subtitle: str = "",
+        margins: tuple[float, float, float, float] = (0.11, 0.98, 0.90, 0.16),
+    ) -> None:
         super().__init__(
             master,
             fg_color=Palette.SURFACE,
@@ -1738,6 +1837,8 @@ class ChartPanel(ctk.CTkFrame):
             border_width=1,
             border_color=Palette.BORDER,
         )
+        self.margins = margins
+        self._axes: Any = None
         self.grid_columnconfigure(0, weight=1)
         self.grid_rowconfigure(1, weight=1)
         header = ctk.CTkFrame(self, fg_color="transparent")
@@ -1757,12 +1858,19 @@ class ChartPanel(ctk.CTkFrame):
         widget.grid(row=1, column=0, sticky="nsew", padx=10, pady=(4, 10))
 
     def axes(self) -> Any:
-        self.figure.clear()
-        plot = self.figure.add_subplot(111)
+        """Reuse one axes object; clearing it is far cheaper than rebuilding the figure."""
+        if self._axes is None:
+            self._axes = self.figure.add_subplot(111)
+            left, right, top, bottom = self.margins
+            self.figure.subplots_adjust(
+                left=left, right=right, top=top, bottom=bottom
+            )
+        plot = self._axes
+        plot.clear()
         plot.set_facecolor(Palette.SURFACE)
         for spine in plot.spines.values():
             spine.set_visible(False)
-        plot.tick_params(colors=Palette.MUTED, labelsize=8, length=0)
+        plot.tick_params(colors=Palette.MUTED, labelsize=9, length=0)
         plot.grid(axis="y", color=Palette.BORDER, linewidth=0.7, alpha=0.8)
         plot.set_axisbelow(True)
         return plot
@@ -1774,15 +1882,11 @@ class ChartPanel(ctk.CTkFrame):
         plot.grid(False)
         plot.text(
             0.5, 0.5, message, ha="center", va="center",
-            color=Palette.FAINT, fontsize=9, transform=plot.transAxes,
+            color=Palette.FAINT, fontsize=10, transform=plot.transAxes,
         )
         self.canvas.draw_idle()
 
     def redraw(self) -> None:
-        try:
-            self.figure.tight_layout(pad=1.1)
-        except Exception:
-            pass
         self.canvas.draw_idle()
 
 
@@ -1802,7 +1906,7 @@ class LedgerTree(ttk.Treeview):
             background=Palette.SURFACE,
             fieldbackground=Palette.SURFACE,
             foreground=Palette.TEXT,
-            rowheight=31,
+            rowheight=34,
             borderwidth=0,
             font=font(10),
         )
@@ -1864,6 +1968,7 @@ class App(ctk.CTk):
         self.current_page = ""
         self.nav_items: dict[str, tuple[ctk.CTkFrame, ctk.CTkButton]] = {}
         self.pages: dict[str, Page] = {}
+        self._stale: set[str] = set()
         self._notify_job: str | None = None
         self._editor: Any = None
         self._icon_ref: Any = None
@@ -1919,15 +2024,24 @@ class App(ctk.CTk):
         self.minsize(min(1080, width), min(660, height))
 
     def _set_icon(self) -> None:
+        path = resource_path("assets/ledger-256.png")
+        try:
+            from PIL import Image, ImageTk
+
+            image = Image.open(path)
+            self._icon_ref = ImageTk.PhotoImage(image)
+            self.iconphoto(True, self._icon_ref)
+            return
+        except Exception:
+            pass
         try:
             size = 64
-            image = tk.PhotoImage(width=size, height=size)
-            image.put(Palette.BG, to=(0, 0, size, size))
-            image.put(Palette.ACCENT, to=(10, 16, 54, 21))
-            image.put(Palette.ACCENT, to=(10, 30, 42, 35))
-            image.put(Palette.ACCENT, to=(10, 44, 48, 49))
-            self.iconphoto(True, image)
-            self._icon_ref = image
+            fallback = tk.PhotoImage(width=size, height=size)
+            fallback.put(Palette.ACCENT, to=(0, 0, size, size))
+            fallback.put("#FFFFFF", to=(20, 14, 30, 50))
+            fallback.put("#FFFFFF", to=(20, 40, 46, 50))
+            self.iconphoto(True, fallback)
+            self._icon_ref = fallback
         except tk.TclError:
             self._icon_ref = None
 
@@ -2088,13 +2202,24 @@ class App(ctk.CTk):
         self.current_page = key
         self.page_title.configure(text=PAGE_TITLES[key])
         self._refresh_page(self.pages[key])
+        self._stale.discard(key)
         self._sync_header()
 
     def refresh_all(self) -> None:
         for page in self.pages.values():
             self._refresh_page(page)
+        self._stale.clear()
         self._sync_header()
         self._sync_backup_label()
+
+    def invalidate(self, *names: str) -> None:
+        """Mark pages as stale, refreshing only the one currently on screen."""
+        self._stale.update(names)
+        if self.current_page in self._stale:
+            page = self.pages.get(self.current_page)
+            if page is not None:
+                self._refresh_page(page)
+            self._stale.discard(self.current_page)
 
     def _refresh_page(self, page: Page) -> None:
         try:
@@ -2202,6 +2327,11 @@ class App(ctk.CTk):
 
     def close(self) -> None:
         try:
+            self.withdraw()
+            self.update_idletasks()
+        except tk.TclError:
+            pass
+        try:
             self.local.stop()
         except Exception:
             traceback.print_exc()
@@ -2237,6 +2367,8 @@ class Page(ctk.CTkFrame):
 
 class DashboardPage(Page):
     def build(self) -> None:
+        self._trend_key: tuple[Any, ...] | None = None
+        self._split_key: tuple[Any, ...] | None = None
         self.grid_columnconfigure((0, 1), weight=1, uniform="charts")
         self.grid_rowconfigure(1, weight=1)
         self.grid_rowconfigure(2, weight=1)
@@ -2262,7 +2394,10 @@ class DashboardPage(Page):
 
         self.trend = ChartPanel(self, "Income against spending", "six cycles")
         self.trend.grid(row=1, column=0, sticky="nsew", padx=(0, 7), pady=(16, 0))
-        self.split = ChartPanel(self, "Where the money goes", "this cycle")
+        self.split = ChartPanel(
+            self, "Where the money goes", "this cycle",
+            margins=(0.30, 0.97, 0.90, 0.10),
+        )
         self.split.grid(row=1, column=1, sticky="nsew", padx=(7, 0), pady=(16, 0))
 
         self.recent = ctk.CTkFrame(
@@ -2284,6 +2419,30 @@ class DashboardPage(Page):
         self.recent_list = ctk.CTkFrame(self.recent, fg_color="transparent")
         self.recent_list.grid(row=1, column=0, sticky="ew", padx=18, pady=(0, 14))
         self.recent_list.grid_columnconfigure(1, weight=1)
+        self.recent_rows: list[tuple[ctk.CTkLabel, ctk.CTkLabel, ctk.CTkLabel]] = []
+        for index in range(5):
+            description = ctk.CTkLabel(
+                self.recent_list, text="", font=font(10),
+                text_color=Palette.TEXT, anchor="w",
+            )
+            category = ctk.CTkLabel(
+                self.recent_list, text="", font=font(9),
+                text_color=Palette.FAINT, anchor="w",
+            )
+            amount = ctk.CTkLabel(
+                self.recent_list, text="", font=mono(10),
+                text_color=Palette.RED, anchor="e",
+            )
+            description.grid(row=index, column=0, sticky="w", pady=3)
+            category.grid(row=index, column=1, sticky="w", padx=(16, 12), pady=3)
+            amount.grid(row=index, column=2, sticky="e", pady=3)
+            self.recent_rows.append((description, category, amount))
+        self.recent_empty = ctk.CTkLabel(
+            self.recent_list, text="Nothing recorded in this cycle yet.",
+            font=font(10), text_color=Palette.FAINT, anchor="w",
+        )
+        self.recent_empty.grid(row=0, column=0, columnspan=3, sticky="w")
+        self.recent_empty.grid_remove()
 
     def refresh(self) -> None:
         start, end = self.app.cycle()
@@ -2327,8 +2486,21 @@ class DashboardPage(Page):
             spends.append(summary.expenses)
 
         if not any(incomes) and not any(spends):
+            key = ("empty",)
+            if key == self._trend_key:
+                return
+            self._trend_key = key
             self.trend.empty("No activity in these cycles")
             return
+
+        key = (
+            tuple(labels),
+            tuple(round(value, 2) for value in incomes),
+            tuple(round(value, 2) for value in spends),
+        )
+        if key == self._trend_key:
+            return
+        self._trend_key = key
 
         plot = self.trend.axes()
         positions = list(range(len(labels)))
@@ -2347,7 +2519,7 @@ class DashboardPage(Page):
         plot.yaxis.set_major_formatter(lambda value, _pos: compact_money(value))
         plot.margins(y=0.18)
         legend = plot.legend(
-            frameon=False, loc="upper left", fontsize=8, handlelength=1.1,
+            frameon=False, loc="upper left", fontsize=9, handlelength=1.1,
             labelcolor=Palette.MUTED, ncols=2,
         )
         for text in legend.get_texts():
@@ -2357,6 +2529,10 @@ class DashboardPage(Page):
     def _draw_split(self, rows: Sequence[sqlite3.Row]) -> None:
         totals = category_totals(rows, self.app.category_map())
         if not totals:
+            key = ("empty",)
+            if key == self._split_key:
+                return
+            self._split_key = key
             self.split.empty("No spending in this cycle")
             return
         top = totals[:8]
@@ -2366,6 +2542,10 @@ class DashboardPage(Page):
 
         labels = [name for name, _value in top]
         values = [value for _name, value in top]
+        key = (tuple(labels), tuple(round(value, 2) for value in values))
+        if key == self._split_key:
+            return
+        self._split_key = key
         colours = [SERIES[index % len(SERIES)] for index in range(len(top))]
 
         plot = self.split.axes()
@@ -2374,7 +2554,7 @@ class DashboardPage(Page):
         positions = list(range(len(values)))
         plot.barh(positions, values, color=colours, height=0.6, zorder=2)
         plot.set_yticks(positions)
-        plot.set_yticklabels(labels, fontsize=8, color=Palette.MUTED)
+        plot.set_yticklabels(labels, fontsize=9, color=Palette.MUTED)
         plot.invert_yaxis()
         plot.set_xticks([])
         plot.tick_params(axis="y", length=0, pad=2)
@@ -2383,13 +2563,11 @@ class DashboardPage(Page):
         for position, value in zip(positions, values, strict=False):
             plot.text(
                 value, position, "  " + compact_money(value),
-                va="center", ha="left", fontsize=7.5, color=Palette.MUTED,
+                va="center", ha="left", fontsize=8.5, color=Palette.MUTED,
             )
         self.split.redraw()
 
     def _draw_recent(self, rows: Sequence[sqlite3.Row]) -> None:
-        for child in self.recent_list.winfo_children():
-            child.destroy()
         payments = sorted(
             (
                 row for row in rows
@@ -2397,27 +2575,26 @@ class DashboardPage(Page):
             ),
             key=lambda row: float(row["amount"]),
         )[:5]
-        if not payments:
-            ctk.CTkLabel(
-                self.recent_list, text="Nothing recorded in this cycle yet.",
-                font=font(10), text_color=Palette.FAINT, anchor="w",
-            ).grid(row=0, column=0, columnspan=3, sticky="w")
-            return
         names = self.app.category_map()
-        for index, row in enumerate(payments):
-            ctk.CTkLabel(
-                self.recent_list, text=str(row["description"])[:72],
-                font=font(10), text_color=Palette.TEXT, anchor="w",
-            ).grid(row=index, column=0, sticky="w", pady=3)
-            ctk.CTkLabel(
-                self.recent_list,
-                text=names.get(int(row["category_id"] or 0), UNCATEGORISED),
-                font=font(9), text_color=Palette.FAINT, anchor="w",
-            ).grid(row=index, column=1, sticky="w", padx=(16, 12), pady=3)
-            ctk.CTkLabel(
-                self.recent_list, text=money(float(row["amount"])),
-                font=mono(10), text_color=Palette.RED, anchor="e",
-            ).grid(row=index, column=2, sticky="e", pady=3)
+        for index, (description, category, amount) in enumerate(self.recent_rows):
+            if index >= len(payments):
+                description.grid_remove()
+                category.grid_remove()
+                amount.grid_remove()
+                continue
+            row = payments[index]
+            description.configure(text=str(row["description"])[:72])
+            category.configure(
+                text=names.get(int(row["category_id"] or 0), UNCATEGORISED)
+            )
+            amount.configure(text=money(float(row["amount"])))
+            description.grid()
+            category.grid()
+            amount.grid()
+        if payments:
+            self.recent_empty.grid_remove()
+        else:
+            self.recent_empty.grid()
 
 
 # ---------------------------------------------------------------------------
@@ -2668,7 +2845,8 @@ class TransactionsPage(Page):
         else:
             changed = self.store.apply_keyword(keyword, category_id)
             self.store.add_rule(keyword, "contains", category_id)
-        self.app.refresh_all()
+        self.refresh()
+        self.app.invalidate("dashboard", "plan", "insights")
         self.app.notify(
             f"{changed} transaction{'s' if changed != 1 else ''} moved to {category}.",
             Palette.ACCENT,
@@ -2680,7 +2858,8 @@ class TransactionsPage(Page):
             return
         flagged = not bool(int(row["is_saving"]))
         self.store.set_saving(transaction_id, flagged)
-        self.app.refresh_all()
+        self.refresh()
+        self.app.invalidate("dashboard", "plan", "insights")
         self.app.notify(
             "Marked as potential saving."
             if flagged
@@ -3223,6 +3402,7 @@ class RulesWindow(ctk.CTkToplevel):
 
 class PlanPage(Page):
     def build(self) -> None:
+        self._projection_key: tuple[Any, ...] | None = None
         self.grid_columnconfigure(0, weight=0, minsize=352)
         self.grid_columnconfigure(1, weight=1)
         self.grid_rowconfigure(0, weight=1)
@@ -3385,6 +3565,17 @@ class PlanPage(Page):
     def _draw_projection(
         self, target: float, saved: float, months: int, net: float, half: float, full: float
     ) -> None:
+        key = (
+            round(target, 2),
+            round(saved, 2),
+            months,
+            round(net, 2),
+            round(half, 2),
+            round(full, 2),
+        )
+        if key == self._projection_key:
+            return
+        self._projection_key = key
         if target <= 0:
             self.chart.empty("Set a target to see the projection")
             return
@@ -3406,15 +3597,15 @@ class PlanPage(Page):
             target, color=Palette.FLAG, linewidth=1.0, linestyle=(0, (4, 4)), zorder=1
         )
         plot.text(
-            0.5, target, "target", color=Palette.FLAG, fontsize=7.5,
+            0.5, target, "target", color=Palette.FLAG, fontsize=8.5,
             va="bottom", ha="left",
         )
-        plot.set_xlabel("months", color=Palette.MUTED, fontsize=8, labelpad=2)
+        plot.set_xlabel("months", color=Palette.MUTED, fontsize=9, labelpad=2)
         plot.yaxis.set_major_formatter(lambda value, _pos: compact_money(value))
         plot.margins(y=0.18, x=0.02)
         plot.set_xlim(0, horizon)
         legend = plot.legend(
-            frameon=False, fontsize=7.5, loc="lower right", labelcolor=Palette.MUTED,
+            frameon=False, fontsize=8.5, loc="lower right", labelcolor=Palette.MUTED,
         )
         for text in legend.get_texts():
             text.set_color(Palette.MUTED)
@@ -4605,9 +4796,19 @@ class SettingsPage(Page):
         )
         scroll.grid(row=0, column=0, sticky="nsew", padx=(0, 6), pady=(0, 6))
 
+        columns = ctk.CTkFrame(scroll, fg_color="transparent")
+        columns.pack(fill="x")
+        columns.grid_columnconfigure((0, 1), weight=1, uniform="settings")
+        left = ctk.CTkFrame(columns, fg_color="transparent")
+        left.grid(row=0, column=0, sticky="new", padx=(0, 6))
+        right = ctk.CTkFrame(columns, fg_color="transparent")
+        right.grid(row=0, column=1, sticky="new", padx=(6, 0))
+        bottom = ctk.CTkFrame(scroll, fg_color="transparent")
+        bottom.pack(fill="x")
+
         # Billing cycle --------------------------------------------------
         card = self._card(
-            scroll,
+            left,
             "Billing cycle",
             "Where each statement period begins. Everything in the app follows this date.",
         )
@@ -4791,7 +4992,35 @@ class SettingsPage(Page):
         self.data_status = ctk.CTkLabel(
             card, text="", font=font(9), text_color=Palette.FAINT, anchor="w"
         )
-        self.data_status.grid(row=4, column=0, columnspan=3, sticky="w", padx=20, pady=(0, 18))
+        self.data_status.grid(row=4, column=0, columnspan=3, sticky="w", padx=20, pady=(0, 10))
+
+        version_row = ctk.CTkFrame(card, fg_color="transparent")
+        version_row.grid(row=5, column=0, columnspan=3, sticky="w", padx=20, pady=(0, 4))
+        self.version_label = ctk.CTkLabel(
+            version_row, text=f"Version {APP_VERSION}", font=font(9),
+            text_color=Palette.MUTED, anchor="w",
+        )
+        self.version_label.pack(side="left", padx=(0, 14))
+        self.update_button = ctk.CTkButton(
+            version_row, text="Check for updates", width=140, height=30, corner_radius=7,
+            fg_color="transparent", hover_color=Palette.RAISED, border_width=1,
+            border_color=Palette.BORDER, text_color=Palette.MUTED, font=font(9),
+            command=self._check_updates,
+        )
+        self.update_button.pack(side="left")
+        self.update_link = ctk.CTkButton(
+            version_row, text="Open release page", width=150, height=30, corner_radius=7,
+            fg_color=Palette.ACCENT, hover_color=Palette.ACCENT_HOVER,
+            text_color="#FFFFFF", font=font(9, "bold"), command=self._open_release,
+        )
+        self.update_status = ctk.CTkLabel(
+            card, text="", font=font(9), text_color=Palette.FAINT, anchor="w",
+            justify="left", wraplength=760,
+        )
+        self.update_status.grid(
+            row=6, column=0, columnspan=3, sticky="w", padx=20, pady=(0, 18)
+        )
+        self.release_url = RELEASES_PAGE
 
         self._load_categories()
         self.refresh()
@@ -4994,6 +5223,42 @@ class SettingsPage(Page):
                 os.system(f'xdg-open "{folder}"')
         except Exception as error:
             self.app.notify(f"Could not open the folder: {error}", Palette.RED)
+
+    def _check_updates(self) -> None:
+        self.update_button.configure(state="disabled")
+        self.update_status.configure(
+            text="Asking GitHub for the latest release...", text_color=Palette.FAINT
+        )
+        run_in_thread(self, check_for_update, self._updates_checked)
+
+    def _updates_checked(self, kind: str, value: Any) -> None:
+        self.update_button.configure(state="normal")
+        if kind != "ok":
+            self.update_status.configure(
+                text=f"Could not check for updates: {value}", text_color=Palette.RED
+            )
+            return
+        info: UpdateInfo = value
+        if info.available:
+            self.release_url = info.url
+            self.update_status.configure(
+                text=f"Version {info.latest} is available. You are on {APP_VERSION}.",
+                text_color=Palette.ACCENT,
+            )
+            self.update_link.pack(side="left", padx=(10, 0))
+        else:
+            self.release_url = RELEASES_PAGE
+            self.update_status.configure(
+                text=f"You are on the latest release ({APP_VERSION}).",
+                text_color=Palette.FAINT,
+            )
+            self.update_link.pack_forget()
+
+    def _open_release(self) -> None:
+        try:
+            webbrowser.open(self.release_url)
+        except Exception as error:
+            self.app.notify(f"Could not open the browser: {error}", Palette.RED)
 
 
 # ---------------------------------------------------------------------------
