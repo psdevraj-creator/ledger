@@ -3427,8 +3427,9 @@ class CategoryDialog(ctk.CTkToplevel):
                 typed = self.new_entry.get().strip()
         except tk.TclError:
             typed = ""
-        category = typed or self.selected
-        self.result = (category, typed or None, bool(self.ignore.get()))
+        new_name = typed or self.new_category
+        category = new_name or self.selected
+        self.result = (category, new_name, bool(self.ignore.get()))
         self.destroy()
 
 

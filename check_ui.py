@@ -168,6 +168,27 @@ def main() -> int:
     check("dialog committed rows", after == before + 3, f"{before} -> {after}")
     check("dialog closed", not dialog.winfo_exists(), dialog.winfo_exists())
 
+    # the category dialog creates, selects and ignores without a human
+    dialog = L.CategoryDialog(
+        app, "TESCO STORES 3421", -45.20, app.category_names(), "Groceries & Dining", False
+    )
+    dialog.update()
+    check("category dialog lists choices",
+          len(dialog.list.winfo_children()) > 5, len(dialog.list.winfo_children()))
+    check("dialog starts on the current category",
+          dialog.selected == "Groceries & Dining", dialog.selected)
+    dialog._show_create()
+    dialog.new_entry.insert(0, "Test Category")
+    dialog._create()
+    dialog.ignore.select()
+    dialog._apply()
+    dialog.update()
+    check("dialog returns the new category",
+          dialog.result is not None and dialog.result[1] == "Test Category",
+          dialog.result)
+    check("dialog returns the ignore flag",
+          dialog.result is not None and dialog.result[2] is True, dialog.result)
+
     # pixel-level sanity: the surfaces must actually be light
     try:
         from PIL import ImageGrab
